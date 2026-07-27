@@ -1,0 +1,106 @@
+# Repo Interrogator — pinned evaluation set
+#
+# Every repo below is pinned to a commit SHA. Nothing here is edited once the
+# first evaluation run has happened: the whole point of pinning is that the code
+# under test cannot move while the agent changes.
+#
+# Three groups, three different jobs:
+#
+#   dev             - used freely during development. Inspected, debugged,
+#                     labeled, and re-run as often as needed.
+#
+#   held_out        - never inspected during development. Scored exactly twice:
+#                     once as a baseline before any tuning, once at the end.
+#                     Reading, labeling, or debugging against these repos at any
+#                     other point invalidates the final number.
+#
+#   memorization    - outside both sets. Used only for a blind run with no tools,
+#                     to estimate how much apparent understanding is training-data
+#                     recall rather than actual code reading. Both are far more
+#                     widely known than any held-out repo, so an inflated blind
+#                     score here is an upper bound on that effect, not a point
+#                     estimate.
+ 
+pinned_on: 2026-07-28
+
+dev:
+  - name: nids
+    url: https://github.com/sayantika-mlsec/network-intrusion-detection-system-project.git
+    sha: 1b5d87d5073103f002a13a371c869b1577aff93a
+    domain: ml-classification
+    note: own repo, ground truth available
+
+  - name: ueba
+    url: https://github.com/sayantika-mlsec/insider-threat-detection-project.git
+    sha: 3db8d4b51dbe56182742a224ec05ad3e09c82e63
+    domain: ml-anomaly-detection
+    note: own repo
+
+  - name: tiered-rag
+    url: https://github.com/sayantika-mlsec/RAG-Powered-Threat-Intelligence-Assistant.git
+    sha: aa92d0fce966a165f42a285590985d08e9530bde 
+    domain: llm-retrieval
+    note: own repo
+
+  - name: instructor
+    url: https://github.com/567-labs/instructor
+    sha: 47fdb2ca07119d389a3c0e8bc28b9930b814f294
+    domain: structured-llm-output
+
+  - name: smolagents
+    url: https://github.com/huggingface/smolagents
+    sha: e3a5b8994b301983b91c0325546e9dc82eab8cf0
+    domain: agent-framework
+
+  - name: ragas
+    url: https://github.com/explodinggradients/ragas
+    sha: 298b68274234c060deacab3cf5fb52aa3a20e885
+    domain: llm-evaluation
+
+held_out:
+  - name: httpx
+    url: https://github.com/encode/httpx
+    sha: b5addb64f0161ff6bfe94c124ef76f6a1fba5254
+    domain: async-http-client
+
+  - name: typer
+    url: https://github.com/fastapi/typer
+    sha: 32d80ef6b4f5aff5094e6983e0928edaa8766c3b
+    domain: cli-framework
+
+  - name: structlog
+    url: https://github.com/hynek/structlog
+    sha: 6651ae67d5790923bdaf110e08fb891b3ac706d8
+    domain: structured-logging
+
+  - name: sqlglot
+    url: https://github.com/tobymao/sqlglot
+    sha: 1fd3bb970bfb4dbca5a764eb9dd3f9a0ff45000f
+    domain: sql-parser-transpiler
+    note: file-heavy (dialects/, optimizer/) - stress-tests file-count cap
+
+memorization_check:
+  - name: flask
+    url: https://github.com/pallets/flask
+    sha: 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81
+
+  - name: requests
+    url: https://github.com/psf/requests
+    sha: 414f0513c33883adf6f2b46901d4f0b38a455851
+
+# --- Selection notes, recorded before any tool code existed ---
+#
+# The held-out set deliberately spans four unrelated problem domains: async I/O,
+# command-line parsing, structured logging, and SQL parsing. None of them shares
+# a problem space with a dev repo.
+#
+# `outlines` was considered for the held-out set and rejected. It solves the same
+# problem as `instructor` (constrained/structured LLM output), which would have
+# made the final held-out score a blend of two different penalties - "the agent
+# has not seen this repo" and "the agent has not seen this kind of code" - with
+# no way to separate them. `sqlglot` was chosen instead for a clean gap.
+#
+# All ten repos are Python. Behaviour on non-Python repositories is therefore
+# never exercised by this evaluation set and must be handled explicitly in the
+# clone/scaffolding layer, either by rejecting them clearly or by degrading to
+# text search without structural symbol extraction.
