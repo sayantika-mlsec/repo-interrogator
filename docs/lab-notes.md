@@ -78,3 +78,33 @@ useful one.
    bit and retries. Left unhandled, this leaks a full repository clone to disk on
    every run.
 
+
+## Entry 2 — Workspace safety layer
+
+Clone wrapper fetches a pinned commit directly (`fetch --depth 1 origin <sha>`)
+rather than shallow-cloning and checking out. A shallow clone retrieves the tip
+of the default branch, which is usually not the pinned commit, so the object is
+never downloaded and checkout fails. The checked-out SHA is verified against the
+requested SHA after every clone; a mismatch is fatal.
+
+Caps reject rather than truncate. A truncated repository still produces
+plausible questions, which is the failure that would silently corrupt a results
+row.
+
+Open question 2 (size cap never exercised) closed: the rejection path is tested
+by lowering the cap rather than by finding an oversized repository.
+
+Open question 3 (Windows read-only cleanup) closed: `shutil.rmtree` with a
+handler that clears the read-only bit and retries. Verified on Windows.
+
+Open question 1 (non-Python repositories) closed by policy: repositories with
+too little Python degrade to text-only analysis with no symbol index, and the
+degradation is logged. Strict rejection is available as a configuration flag.
+
+All paths supplied to tools resolve through a single containment check that
+rejects anything landing outside the repository root. The check runs after
+path resolution, not before: string inspection cannot catch a symlink that
+points out of the tree while containing no traversal segments.
+
+Every guard has an assertion in a committed smoke script rather than a
+one-off manual check, so the rejection paths stay tested as the code changes.
