@@ -211,3 +211,55 @@ buries the first.
    assignments, and PEP 695 generic parameter lists. Until the indexer has been
    pointed at a substantial third-party repository and its failure count
    inspected, the parse-failure rate on modern syntax is unknown.
+
+   ## Entry 4 — Symbol extraction verified against real code
+
+The extractor had only ever run against a hand-written fixture. Two questions
+were open: whether the tree-sitter grammar handles current Python, and whether
+the traversal reaches everything the grammar parses. They are different
+failures, and only one of them is loud.
+
+`symbols_in_file` rejects any file whose parse tree contains an error, so a
+grammar gap drops a whole file and lands in `SymbolIndex.failures`. That half is
+self-reporting.
+
+The other half is not. The walk descends into the module and into class bodies,
+and nowhere else. A definition inside a conditional block — `if TYPE_CHECKING:`,
+or `try: ... except ImportError:` — parses cleanly and is silently absent. No
+error, no failure row, and `files_indexed` still counts the file as fully
+indexed. An index quietly short still produces plausible questions, and the
+ablation that removes the index would then be measuring the value of removing
+something incomplete.
+
+`scripts/probe_grammar.py` measures both. It re-parses each file with an
+independent traversal that also descends through statement containers, marking
+every definition with whether the extractor could have reached it and which
+container hid it if not. Function bodies are excluded from that traversal too,
+so the documented closure boundary does not register as a gap. The probe
+cross-checks itself per file: its own reachable count against what
+`symbols_in_file` actually returned, with disagreements reported separately
+rather than folded into the totals.
+
+A syntax fixture covers `match`, walrus, PEP 695 generic functions and classes
+and `type` aliases, `except*`, parenthesized context managers, positional-only
+parameters, async comprehensions, PEP 614 decorator expressions, PEP 701 nested
+f-strings, and a slotted dataclass. Two further cases hold a class inside a
+conditional block, present specifically so the two kinds of gap can be seen side
+by side.
+
+Results. All fourteen fixture cases parse. Twelve yield exactly the expected
+symbols; the two conditional cases parse and yield nothing, confirming the
+silent gap as a mechanism. Against a pinned dev repository: 75 Python files,
+1414 symbols, zero parse failures, zero definitions missed. The self-check
+agreed on all 75 files, which is what makes the zero worth believing.
+
+Both questions close. The grammar handles current syntax. The conditional-
+definition gap exists but does not occur in this repository — `if TYPE_CHECKING:`
+blocks in practice hold imports rather than definitions.
+
+Two bounds on that conclusion, recorded rather than resolved. It is one
+repository, not the whole set. And the probe's container list is fixed, so a
+container type absent from it would cause under-reporting; the error direction is
+conservative, but a zero is bounded by the probe rather than proven by it. The
+probe is committed and offline-cheap, so it can be re-run across the full set
+when repository sizes are next measured.
