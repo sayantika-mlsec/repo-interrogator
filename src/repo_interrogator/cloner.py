@@ -21,6 +21,7 @@ from .errors import (
     CloneFailedError,
     CloneTimeoutError,
     GitNotAvailableError,
+    InvalidShaError,
     RepoTooLargeError,
     ShaMismatchError,
     TooManyFilesError,
@@ -169,7 +170,7 @@ def cloned_repo(
     limits = limits or CloneLimits()
 
     if len(sha) != _FULL_SHA_LEN or not all(c in "0123456789abcdef" for c in sha.lower()):
-        raise ValueError(
+       raise InvalidShaError(
             f"{name}: sha must be a full 40-character hex commit id, got {sha!r}. "
             "Abbreviated SHAs are ambiguous and are rejected."
         )
