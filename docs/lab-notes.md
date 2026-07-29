@@ -108,3 +108,106 @@ points out of the tree while containing no traversal segments.
 
 Every guard has an assertion in a committed smoke script rather than a
 one-off manual check, so the rejection paths stay tested as the code changes.
+
+## Entry 3 — Structural symbol extraction
+
+### Line numbering fixed as a contract
+
+Symbol line ranges are 1-based and inclusive on both ends. A definition
+occupying the first three lines of a file is `(1, 3)`.
+
+This is the convention editors, `git blame`, and `grep -n` already use, and it is
+what every citation in this project resolves against. The alternative — carrying
+tree-sitter's native 0-based rows through the system — would have pushed the
+conversion into the verifier, the reader, and the frontend, giving each of them
+its own chance to get it wrong.
+
+The convention is enforced rather than documented: constructing a symbol with a
+start line below 1, or an end line preceding its start, raises. A convention
+that is only written down drifts; one that is asserted cannot.
+
+tree-sitter reports an exclusive end point, which for any definition ending in a
+newline lands on column 0 of the *following* line. Uncorrected, every multi-line
+symbol would claim one line too many — invisible in the middle of a file, and
+visible only at the last symbol in it. The correction happens once, at the node
+boundary, and there is a smoke assertion pinned specifically to the final symbol
+in a file because that is the only position where the error shows.
+
+### Signatures are sliced, never reconstructed
+
+A signature is the literal source text from the definition keyword to the start
+of the body. Reassembling it from syntax-tree children would mean
+re-implementing Python's rules for defaults, annotations, star-args, and generic
+parameters — and any gap between the reconstruction and the file would make the
+citation subtly untrue. Source text cannot drift from itself.
+
+Spans start at the first decorator where one is present. A decorator changes what
+the code does, so a range that omits it points at code it does not fully describe.
+
+### Nested definitions: a deliberate boundary
+
+The walk descends into class bodies but not function bodies. Closures and locally
+defined helpers are real code, but they are not navigation targets, and including
+them would inflate the map with entries no question can usefully cite. This is a
+choice, not an oversight, and it is what the reported symbol count means.
+
+### One traversal, shared
+
+The symbol indexer walks files through the same iterator every other tool uses,
+rather than defining its own. Two traversals would eventually disagree about
+which files a repository contains, and that disagreement would surface as a
+difference in ablation results — appearing to measure the value of the symbol
+map while actually measuring a file-set mismatch. The smoke script asserts that
+skip-listed directories stay invisible to the indexer, with the reason recorded
+in the assertion itself.
+
+### Failure has a shape
+
+A file that will not parse is recorded against its path and counted, not silently
+skipped and not fatal. One unparseable vendored file should not void the other
+four hundred, but a run that missed a third of a repository must not be
+reportable as if it had seen the whole tree.
+
+A repository in text-only mode raises when a symbol index is requested, rather
+than returning an empty one. An empty index is indistinguishable from a
+repository that defines nothing.
+
+### Error hierarchy
+
+A single project-wide root now sits above the exception tree, so a caller at the
+API boundary can catch everything in one clause. Parsing failures are not
+workspace failures and hang off their own branch beneath that root, which keeps
+the layers distinguishable without forcing callers to name each one.
+
+### Two corrections to the workspace layer
+
+Found while reviewing it against the new code, both concerning errors that
+disguised themselves as other errors:
+
+A malformed commit id was raising an untyped error, which meant callers had to
+match on message text to tell a bad argument from a pin that failed to hold.
+Those need different responses — one is a bad entry in the pinned set, the other
+means every number produced from that repository is suspect.
+
+The Windows deletion handler retried on any failure, running its permission fix
+unconditionally. A file that vanished mid-walk, or one held open by another
+process, would surface as a confusing failure in the fix rather than as the
+original cause. It now re-raises anything that is not a permission problem. This
+matters because cleanup runs during exception handling, where a second error
+buries the first.
+
+### Open questions carried forward
+
+4. **Symlinked files are invisible to the walk.** The file iterator skips
+   symlinks so that a directory link cannot send it walking the whole
+   filesystem. The side effect is that a repository storing its source behind
+   symlinks would measure near zero and pass the size caps without ever being
+   read. None of the pinned repositories do this, so it is recorded rather than
+   solved.
+
+5. **Grammar exercised only against fixture code.** The extractor is verified
+   against a hand-written fixture covering async definitions, decorators, and
+   nested classes. Real code contains structural pattern matching, walrus
+   assignments, and PEP 695 generic parameter lists. Until the indexer has been
+   pointed at a substantial third-party repository and its failure count
+   inspected, the parse-failure rate on modern syntax is unknown.
