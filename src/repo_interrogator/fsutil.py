@@ -38,7 +38,7 @@ SKIP_DIRS = frozenset(
 )
 
 
-def _force_writable_and_retry(func, path: str, _exc) -> None:
+def _force_writable_and_retry(func, path: str, exc: BaseException) -> None:
     """Clear the read-only bit and retry a failed deletion.
 
     Git stores objects under ``.git/objects`` as read-only, because they are
@@ -48,7 +48,13 @@ def _force_writable_and_retry(func, path: str, _exc) -> None:
 
     POSIX does not have this problem: deletion permission comes from the parent
     directory, not the file. So this handler only ever fires on Windows.
+
+    Anything that is not a permission problem is re-raised untouched. Retrying
+    a vanished file or a locked handle would replace the real error with a
+    ``chmod`` failure two frames away from the cause.
     """
+    if not isinstance(exc, PermissionError):
+        raise exc
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
