@@ -263,3 +263,70 @@ container type absent from it would cause under-reporting; the error direction i
 conservative, but a zero is bounded by the probe rather than proven by it. The
 probe is committed and offline-cheap, so it can be re-run across the full set
 when repository sizes are next measured.
+
+## Entry 5 — File access tools
+
+Three tools complete the model-facing surface: `list_files`, `read_file`,
+`search_code`. Two facts drove every decision. The paths come from a model that
+guessed, so all three route through the containment check before touching the
+filesystem. The output lands in a context window, so all three bound their
+response and mark truncation in the same channel as the content.
+
+That bounding is deliberately the opposite of the workspace layer's. The
+workspace rejects rather than truncates because a half-read repository is
+invisible and corrupts a results row. A half-read file is visible to the reader
+and recoverable by asking for the next range.
+
+Line numbering is 1-based and inclusive, identical to the symbol layer. Not a
+stylistic match: one verifier resolves citations from both, so a one-line
+disagreement would fail half of every run's citations, and the failures would
+look like model errors.
+
+**The config seam.** Numbered output and the required line range are removed
+later to measure what they are worth. Editing a tool at measurement time would
+invalidate the measurement, so `ToolConfig` exists before any baseline is
+recorded. It is threaded explicitly rather than read from a global or the
+environment — for provenance, not testability: a results row has to state the
+configuration that produced it, and configuration living in process state cannot
+be serialised into the record. Defaults are the design under test, so a
+forgotten config yields the real design rather than a silent ablation.
+
+**Line-number metadata leaks, and nearly did.** A header reading
+`core.py lines 40-80 of 320`, or a marker saying `Continue with start_line=81`,
+hands back exactly what the numbering ablation removes — the model would only
+have to count within a block whose offset it was told. Under
+`number_lines=False` no line number appears anywhere; the marker degrades to a
+bare `output truncated`. Three assertions verify no digit survives.
+
+**One traversal.** ripgrep by default skips hidden paths and honours
+`.gitignore`; `os.walk` does neither. Left alone, `search_code` would have
+returned hits in files `list_files` never shows and missed files it does — the
+same two-traversals-disagreeing failure the symbol indexer already refused.
+`--hidden --no-ignore --no-follow` plus skip globs generated from `SKIP_DIRS`
+makes the file sets identical, asserted by checking search hits are a subset of
+listed paths. `--no-config` is there because a `RIPGREP_CONFIG_PATH` present on
+one machine and not another would change results silently.
+
+**A written expectation was wrong and the code was right.** Latin-1 text was
+expected to fail as binary. The content predicate correctly calls it text, and
+the UTF-8 decode then fails separately. `BinaryFileError` means "this is a PNG";
+`FileDecodeError` means "this is source in the wrong encoding". An agent can act
+on the difference. The assertion was corrected, not the behaviour.
+
+**One deviation from the plan.** A range extending past end-of-file was
+specified to clamp. `end_line` past EOF does clamp; `start_line` past EOF raises
+instead, because clamping the start would silently return lines nobody asked
+for. The error carries the file's real length so the call can be retried.
+
+84 assertions, passing on Windows with 15.2.0. The 
+JSON message schema, exit code 1 meaning "no matches", and every flag used
+survived a major version bump — recorded as an observation, since the flag set
+is what makes a search reproducible across machines.
+
+Two limitations carried forward. `fnmatch` patterns cross directory separators
+unlike shell glob, so `*.py` matches nested files; the looser reading fails
+toward showing too much rather than silently showing nothing. And `search_code`
+still returns line numbers under the numbering ablation, so the model can obtain
+them from search even when `read_file` withholds them — a genuine interaction
+between two tools, unfixable without making search useless, to be reported
+alongside the ablation result.
