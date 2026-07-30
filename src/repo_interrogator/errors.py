@@ -99,3 +99,65 @@ class SymbolIndexUnavailableError(SymbolError):
     index, because an empty index is indistinguishable from a repo that defines
     nothing.
     """
+
+# --- tool layer ------------------------------------------------------------
+
+class ToolError(RepoInterrogatorError):
+    """Base class for the model-facing tools. Never raised directly.
+
+    A separate branch from ``SymbolError`` on purpose. The symbol layer raises
+    ``SymbolParseError`` for a missing file, which conflates "this path does not
+    exist" with "this file is not Python". The agent loop needs to tell those
+    apart: one is a recoverable mistake it should retry with a different path,
+    the other is a fact about the repository.
+    """
+
+
+class ToolConfigurationError(ToolError):
+    """The tools cannot be constructed at all.
+
+    Raised at construction rather than on first use. A missing dependency
+    discovered fifty steps into an agent run has already wasted the run.
+    """
+
+
+class RipgrepNotAvailableError(ToolConfigurationError):
+    """The ``rg`` executable was not found on PATH.
+
+    There is deliberately no Python-side fallback. A fallback would search a
+    different file set with different regex semantics, so the same query would
+    return different results depending on the machine -- and nothing in a
+    results table would record which one ran.
+    """
+
+
+class FileNotFoundInRepoError(ToolError):
+    """A path resolved inside the repository but does not exist."""
+
+
+class NotAFileError(ToolError):
+    """A path exists but is a directory."""
+
+
+class BinaryFileError(ToolError):
+    """A path points at binary content and cannot be read as text."""
+
+
+class FileDecodeError(ToolError):
+    """A file is text, but not valid UTF-8."""
+
+
+class FileTooLargeError(ToolError):
+    """A single file exceeds the per-file read ceiling."""
+
+
+class LineRangeRequiredError(ToolError):
+    """``read_file`` was called without a line range while one is required."""
+
+
+class InvalidLineRangeError(ToolError):
+    """A line range is malformed, or begins past the end of the file."""
+
+
+class SearchFailedError(ToolError):
+    """ripgrep exited with an error, or emitted output that could not be read."""

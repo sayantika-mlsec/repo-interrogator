@@ -125,3 +125,59 @@ def resolve_within(root: Path, candidate: str | Path) -> Path:
             f"path {candidate!r} resolves to {target}, outside repository root {root}"
         )
     return target
+
+# --- readability -----------------------------------------------------------
+
+SNIFF_BYTES = 8192
+"""How much of a file is inspected to decide whether it is text."""
+
+_NON_TEXT_RATIO = 0.30
+
+_TEXT_BYTES = frozenset(bytes(range(32, 127)) + b"\n\r\t\f\b\x1b")
+
+
+def is_probably_binary(path: Path, *, sniff: int = SNIFF_BYTES) -> bool:
+    """Decide whether a file holds binary content, by looking at the content.
+
+    Deliberately not an extension allowlist. An allowlist has to be maintained,
+    and is wrong the first time a repository stores source under an unfamiliar
+    suffix or a data file under ``.txt``.
+
+    Three signals, in order of reliability:
+
+    A NUL byte in the first chunk. This is git's own heuristic, and it settles
+    every real image, archive and compiled artifact -- PNG carries one at byte 8,
+    JPEG at byte 4.
+
+    Failure to decode as UTF-8. A truncated multi-byte character at the sniff
+    boundary is not evidence of anything, so a failure within the last three
+    bytes is ignored; that is an artifact of where the read stopped.
+
+    A high proportion of bytes outside the printable range. Only consulted when
+    the decode already failed, so a UTF-8 file full of CJK text -- which would
+    trip a naive ratio test badly -- never reaches it.
+
+    An unreadable file counts as binary. The caller wanted to know whether it can
+    be put in front of a model, and the answer is no either way.
+    """
+    try:
+        with path.open("rb") as fh:
+            chunk = fh.read(sniff)
+    except OSError:
+        return True
+
+    if not chunk:
+        return False
+
+    if b"\x00" in chunk:
+        return True
+
+    try:
+        chunk.decode("utf-8")
+        return False
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(chunk) - 3:
+            return False
+
+    non_text = sum(1 for b in chunk if b not in _TEXT_BYTES)
+    return non_text / len(chunk) > _NON_TEXT_RATIO
