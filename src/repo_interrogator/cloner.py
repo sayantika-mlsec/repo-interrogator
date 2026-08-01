@@ -22,12 +22,13 @@ from .errors import (
     CloneTimeoutError,
     GitNotAvailableError,
     InvalidShaError,
+    ReadableBytesTooLargeError,
     RepoTooLargeError,
     ShaMismatchError,
     TooManyFilesError,
     UnsupportedLanguageError,
 )
-from .fsutil import iter_files, measure_tree, rmtree_robust
+from .fsutil import TreeMeasurement, measure_tree, rmtree_robust
 
 log = logging.getLogger(__name__)
 
@@ -52,9 +53,28 @@ class CloneLimits:
     would look fine. That is the dangerous failure: a number in the results
     table computed against half a codebase, with nothing in the output saying
     so. Rejection is loud; truncation is silent.
+
+    TWO BYTE BOUNDS, NOT ONE
+    ------------------------
+    A single total-bytes cap answers the wrong question. It rejected a pinned
+    dev repository whose working tree was dominated by documentation GIFs --
+    roughly 7 MB of readable content behind 65 MB of screenshots. The cap was
+    measuring blob weight while claiming to measure code weight.
+
+    So: ``max_total_bytes`` protects the machine from an enormous clone, and
+    ``max_readable_bytes`` bounds what the agent actually has to contend with.
+    They guard different resources and a repository can trip either alone.
     """
 
-    max_bytes: int = 50 * 1024 * 1024
+    max_total_bytes: int = 500 * 1024 * 1024
+    """Machine guard. Generous by design -- its job is to stop a pathological
+    clone, not to shape the repo set."""
+
+    max_readable_bytes: int = 20 * 1024 * 1024
+    """The bound that actually shapes the repo set. Provisional until the full
+    pinned set has been measured; a cap set before looking at the distribution
+    is the failure this whole change exists to fix."""
+
     max_files: int = 10_000
     timeout_s: int = 300
     min_python_files: int = 5
@@ -63,19 +83,45 @@ class CloneLimits:
     degrade_on_unsupported: bool = True
     """If False, a non-Python repository raises instead of degrading."""
 
+    enforce_caps: bool = True
+    """When False, measure and report but never reject.
+
+    Exists for one job: surveying the pinned set, where a repository that would
+    be rejected is precisely the one whose numbers are needed. Turning it off
+    logs a warning, because a results row produced with the caps disabled is not
+    comparable to one produced with them on.
+    """
+
 
 @dataclass(frozen=True)
 class ClonedRepo:
-    """A verified working tree on disk."""
+    """A verified working tree on disk, with the measurement that admitted it."""
 
     name: str
     url: str
     sha: str
     path: Path
-    size_bytes: int
-    file_count: int
-    python_file_count: int
+    measurement: TreeMeasurement
+    """Carried whole rather than unpacked into scalars, so a results row records
+    the same object the gate decided on -- including whether it was complete."""
+
     mode: AnalysisMode
+
+    @property
+    def total_bytes(self) -> int:
+        return self.measurement.total_bytes
+
+    @property
+    def readable_bytes(self) -> int:
+        return self.measurement.readable_bytes
+
+    @property
+    def file_count(self) -> int:
+        return self.measurement.file_count
+
+    @property
+    def python_file_count(self) -> int:
+        return self.measurement.python_file_count
 
 
 def _run_git(args: list[str], *, cwd: Path | None, timeout_s: int) -> str:
@@ -135,6 +181,46 @@ def _fetch_pinned(url: str, sha: str, dest: Path, timeout_s: int) -> None:
     )
 
 
+def _mb(value: int) -> str:
+    return f"{value / 1e6:.1f} MB"
+
+
+def _floor(measurement: TreeMeasurement, value: int) -> str:
+    """Format a byte figure, saying 'at least' exactly when the walk was partial.
+
+    A bounded walk stops at the first file past the bound, so its totals are
+    lower bounds. Reporting one as a tree size is the error this helper exists
+    to make impossible -- the phrasing is derived from the measurement rather
+    than chosen by whoever writes the message.
+    """
+    return f"{'at least ' if measurement.partial else ''}{_mb(value)}"
+
+
+def _enforce(measurement: TreeMeasurement, limits: CloneLimits, name: str) -> None:
+    """Reject on any breached bound. Checked in the order the walk checks them."""
+    if measurement.file_count > limits.max_files:
+        raise TooManyFilesError(
+            f"{name}: working tree exceeds {limits.max_files} files "
+            f"(counted {'at least ' if measurement.partial else ''}"
+            f"{measurement.file_count})"
+        )
+
+    if measurement.total_bytes > limits.max_total_bytes:
+        raise RepoTooLargeError(
+            f"{name}: working tree is {_floor(measurement, measurement.total_bytes)}, "
+            f"over the {_mb(limits.max_total_bytes)} total-tree guard"
+        )
+
+    if measurement.readable_bytes > limits.max_readable_bytes:
+        raise ReadableBytesTooLargeError(
+            f"{name}: readable content is "
+            f"{_floor(measurement, measurement.readable_bytes)}, over the "
+            f"{_mb(limits.max_readable_bytes)} readable cap "
+            f"(whole tree {_floor(measurement, measurement.total_bytes)}, "
+            f"{measurement.readable_file_count} readable files)"
+        )
+
+
 def _classify(python_files: int, limits: CloneLimits, name: str) -> AnalysisMode:
     if python_files >= limits.min_python_files:
         return AnalysisMode.FULL
@@ -170,7 +256,7 @@ def cloned_repo(
     limits = limits or CloneLimits()
 
     if len(sha) != _FULL_SHA_LEN or not all(c in "0123456789abcdef" for c in sha.lower()):
-       raise InvalidShaError(
+        raise InvalidShaError(
             f"{name}: sha must be a full 40-character hex commit id, got {sha!r}. "
             "Abbreviated SHAs are ambiguous and are rejected."
         )
@@ -188,32 +274,47 @@ def cloned_repo(
                 f"{name}: requested {sha}, checked out {actual}. The pin is not holding."
             )
 
-        size, count = measure_tree(
-            dest, max_bytes=limits.max_bytes, max_files=limits.max_files
-        )
-        if size > limits.max_bytes:
-            raise RepoTooLargeError(
-                f"{name}: working tree exceeds {limits.max_bytes / 1e6:.0f} MB "
-                f"(measured at least {size / 1e6:.1f} MB)"
+        if limits.enforce_caps:
+            # Bounded: may stop early, figures are lower bounds, `breached` says so.
+            measurement = measure_tree(
+                dest,
+                max_total_bytes=limits.max_total_bytes,
+                max_readable_bytes=limits.max_readable_bytes,
+                max_files=limits.max_files,
             )
-        if count > limits.max_files:
-            raise TooManyFilesError(
-                f"{name}: working tree exceeds {limits.max_files} files "
-                f"(counted at least {count})"
+            _enforce(measurement, limits, name)
+        else:
+            log.warning(
+                "%s: cap enforcement disabled. Measuring only -- this clone is not "
+                "comparable to one admitted under the caps.",
+                name,
             )
+            # Unbounded: walks to completion, every figure exact.
+            measurement = measure_tree(dest)
 
-        py_count = sum(1 for f in iter_files(dest) if f.suffix == ".py")
-        mode = _classify(py_count, limits, name)
+        # Safe in both branches: an enforced walk that stopped early has already
+        # raised, so the Python count reaching here is always a real total.
+        mode = _classify(measurement.python_file_count, limits, name)
 
         log.info(
-            "%s @ %s: %.1f MB, %d files (%d python), mode=%s",
-            name, sha[:8], size / 1e6, count, py_count, mode.value,
+            "%s @ %s: %s tree / %s readable, %d files (%d readable, %d python), mode=%s",
+            name,
+            sha[:8],
+            _mb(measurement.total_bytes),
+            _mb(measurement.readable_bytes),
+            measurement.file_count,
+            measurement.readable_file_count,
+            measurement.python_file_count,
+            mode.value,
         )
 
         yield ClonedRepo(
-            name=name, url=url, sha=sha, path=dest,
-            size_bytes=size, file_count=count,
-            python_file_count=py_count, mode=mode,
+            name=name,
+            url=url,
+            sha=sha,
+            path=dest,
+            measurement=measurement,
+            mode=mode,
         )
     finally:
         rmtree_robust(dest)
