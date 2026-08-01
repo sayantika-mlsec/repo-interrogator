@@ -1,0 +1,570 @@
+{
+  "pinned_on": "2026-07-28",
+  "measured": [
+    {
+      "name": "nids",
+      "group": "dev",
+      "domain": "ml-classification",
+      "url": "https://github.com/sayantika-mlsec/network-intrusion-detection-system-project.git",
+      "sha": "1b5d87d5073103f002a13a371c869b1577aff93a",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "monitoring/nids_drift_report_benign_only.html",
+          "bytes": 8238489,
+          "readable": true
+        },
+        {
+          "path": "nids_pipeline.pkl",
+          "bytes": 2889462,
+          "readable": false
+        },
+        {
+          "path": "scratch.ipynb",
+          "bytes": 13933,
+          "readable": true
+        },
+        {
+          "path": "app.py",
+          "bytes": 12098,
+          "readable": true
+        },
+        {
+          "path": "train_model.py",
+          "bytes": 8460,
+          "readable": true
+        },
+        {
+          "path": "monitoring/check_data_drift.py",
+          "bytes": 8017,
+          "readable": true
+        }
+      ],
+      "total_bytes": 11215642,
+      "readable_bytes": 8325172,
+      "file_count": 25,
+      "readable_file_count": 23,
+      "python_file_count": 7,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "ueba",
+      "group": "dev",
+      "domain": "ml-anomaly-detection",
+      "url": "https://github.com/sayantika-mlsec/insider-threat-detection-project.git",
+      "sha": "3db8d4b51dbe56182742a224ec05ad3e09c82e63",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "exploration.ipynb",
+          "bytes": 62694,
+          "readable": true
+        },
+        {
+          "path": "inference.py",
+          "bytes": 49554,
+          "readable": true
+        },
+        {
+          "path": "src/detector.py",
+          "bytes": 42032,
+          "readable": true
+        },
+        {
+          "path": "dashboard.py",
+          "bytes": 34310,
+          "readable": true
+        },
+        {
+          "path": "diagnostics.py",
+          "bytes": 28781,
+          "readable": true
+        },
+        {
+          "path": "README.md",
+          "bytes": 25266,
+          "readable": true
+        }
+      ],
+      "total_bytes": 297257,
+      "readable_bytes": 297257,
+      "file_count": 15,
+      "readable_file_count": 15,
+      "python_file_count": 9,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "tiered-rag",
+      "group": "dev",
+      "domain": "llm-retrieval",
+      "url": "https://github.com/sayantika-mlsec/RAG-Powered-Threat-Intelligence-Assistant.git",
+      "sha": "aa92d0fce966a165f42a285590985d08e9530bde",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "docs/lab-notes.md",
+          "bytes": 69275,
+          "readable": true
+        },
+        {
+          "path": "app.py",
+          "bytes": 35870,
+          "readable": true
+        },
+        {
+          "path": "threat_analyzer.py",
+          "bytes": 25550,
+          "readable": true
+        },
+        {
+          "path": "eval_pipeline.md",
+          "bytes": 23091,
+          "readable": true
+        },
+        {
+          "path": "generation_capture.py",
+          "bytes": 21281,
+          "readable": true
+        },
+        {
+          "path": "eval_retrieval.py",
+          "bytes": 20427,
+          "readable": true
+        }
+      ],
+      "total_bytes": 405074,
+      "readable_bytes": 405074,
+      "file_count": 34,
+      "readable_file_count": 34,
+      "python_file_count": 24,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "instructor",
+      "group": "dev",
+      "domain": "structured-llm-output",
+      "url": "https://github.com/567-labs/instructor",
+      "sha": "47fdb2ca07119d389a3c0e8bc28b9930b814f294",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "docs/blog/posts/img/Structured_Output_Extraction.gif",
+          "bytes": 12614268,
+          "readable": false
+        },
+        {
+          "path": "docs/img/youtube.gif",
+          "bytes": 9611341,
+          "readable": false
+        },
+        {
+          "path": "docs/blog/posts/img/youtube-clips.gif",
+          "bytes": 7897920,
+          "readable": false
+        },
+        {
+          "path": "docs/blog/posts/img/youtube-flashcards/telemetry.gif",
+          "bytes": 3914167,
+          "readable": false
+        },
+        {
+          "path": "docs/blog/posts/img/parea/form-mode.gif",
+          "bytes": 2868984,
+          "readable": false
+        },
+        {
+          "path": "docs/blog/posts/img/style_4.png",
+          "bytes": 2817565,
+          "readable": false
+        }
+      ],
+      "total_bytes": 76871609,
+      "readable_bytes": 6573126,
+      "file_count": 979,
+      "readable_file_count": 890,
+      "python_file_count": 541,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "smolagents",
+      "group": "dev",
+      "domain": "agent-framework",
+      "url": "https://github.com/huggingface/smolagents",
+      "sha": "e3a5b8994b301983b91c0325546e9dc82eab8cf0",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "tests/data/000000039769.png",
+          "bytes": 694498,
+          "readable": false
+        },
+        {
+          "path": "tests/test_local_python_executor.py",
+          "bytes": 113019,
+          "readable": true
+        },
+        {
+          "path": "tests/test_agents.py",
+          "bytes": 108967,
+          "readable": true
+        },
+        {
+          "path": "src/smolagents/models.py",
+          "bytes": 88156,
+          "readable": true
+        },
+        {
+          "path": "src/smolagents/agents.py",
+          "bytes": 82593,
+          "readable": true
+        },
+        {
+          "path": "src/smolagents/local_python_executor.py",
+          "bytes": 69927,
+          "readable": true
+        }
+      ],
+      "total_bytes": 2739725,
+      "readable_bytes": 2045227,
+      "file_count": 185,
+      "readable_file_count": 184,
+      "python_file_count": 75,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "ragas",
+      "group": "dev",
+      "domain": "llm-evaluation",
+      "url": "https://github.com/explodinggradients/ragas",
+      "sha": "298b68274234c060deacab3cf5fb52aa3a20e885",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "docs/getstarted/ragas_get_started_evals.gif",
+          "bytes": 18458800,
+          "readable": false
+        },
+        {
+          "path": "docs/getstarted/rag_eval.gif",
+          "bytes": 14429634,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/imgs/experiments_quickstart/hello_world.gif",
+          "bytes": 1796853,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/imgs/trace-langsmith.png",
+          "bytes": 734563,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/langsmith_dashboard.png",
+          "bytes": 633625,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/imgs/compare-llm-result.png",
+          "bytes": 526410,
+          "readable": false
+        }
+      ],
+      "total_bytes": 48884860,
+      "readable_bytes": 5226922,
+      "file_count": 694,
+      "readable_file_count": 642,
+      "python_file_count": 387,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "httpx",
+      "group": "held_out",
+      "domain": "async-http-client",
+      "url": "https://github.com/encode/httpx",
+      "sha": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "docs/img/butterfly.png",
+          "bytes": 683778,
+          "readable": false
+        },
+        {
+          "path": "docs/img/gh-actions-fail-test.png",
+          "bytes": 426206,
+          "readable": false
+        },
+        {
+          "path": "docs/img/httpx-help.png",
+          "bytes": 364796,
+          "readable": false
+        },
+        {
+          "path": "docs/img/gh-actions-fail-check.png",
+          "bytes": 247492,
+          "readable": false
+        },
+        {
+          "path": "tests/models/whatwg.json",
+          "bytes": 218590,
+          "readable": true
+        },
+        {
+          "path": "docs/img/httpx-request.png",
+          "bytes": 205436,
+          "readable": false
+        }
+      ],
+      "total_bytes": 3354431,
+      "readable_bytes": 1024466,
+      "file_count": 125,
+      "readable_file_count": 115,
+      "python_file_count": 60,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "typer",
+      "group": "held_out",
+      "domain": "cli-framework",
+      "url": "https://github.com/fastapi/typer",
+      "sha": "32d80ef6b4f5aff5094e6983e0928edaa8766c3b",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "uv.lock",
+          "bytes": 366371,
+          "readable": true
+        },
+        {
+          "path": "docs/release-notes.md",
+          "bytes": 137399,
+          "readable": true
+        },
+        {
+          "path": "typer/main.py",
+          "bytes": 71111,
+          "readable": true
+        },
+        {
+          "path": "typer/params.py",
+          "bytes": 61481,
+          "readable": true
+        },
+        {
+          "path": "docs/img/github-social-preview.png",
+          "bytes": 50735,
+          "readable": false
+        },
+        {
+          "path": "typer/core.py",
+          "bytes": 44067,
+          "readable": true
+        }
+      ],
+      "total_bytes": 2126881,
+      "readable_bytes": 2028557,
+      "file_count": 773,
+      "readable_file_count": 769,
+      "python_file_count": 635,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "structlog",
+      "group": "held_out",
+      "domain": "structured-logging",
+      "url": "https://github.com/hynek/structlog",
+      "sha": "6651ae67d5790923bdaf110e08fb891b3ac706d8",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "docs/_static/social card.afdesign",
+          "bytes": 577103,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/console_renderer.png",
+          "bytes": 353918,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/structlog_logo.png",
+          "bytes": 152510,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/structlog_logo.afdesign",
+          "bytes": 112021,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/structlog_logo_horizontal.afdesign",
+          "bytes": 58175,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/BoundLogger.svg",
+          "bytes": 55792,
+          "readable": true
+        }
+      ],
+      "total_bytes": 2188123,
+      "readable_bytes": 908397,
+      "file_count": 118,
+      "readable_file_count": 110,
+      "python_file_count": 46,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "sqlglot",
+      "group": "held_out",
+      "domain": "sql-parser-transpiler",
+      "url": "https://github.com/tobymao/sqlglot",
+      "sha": "1fd3bb970bfb4dbca5a764eb9dd3f9a0ff45000f",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "CHANGELOG.md",
+          "bytes": 1993319,
+          "readable": true
+        },
+        {
+          "path": "posts/sql_diff_images/figure_2.gif",
+          "bytes": 1511115,
+          "readable": false
+        },
+        {
+          "path": "tests/fixtures/optimizer/tpc-ds/catalog_sales.csv.gz",
+          "bytes": 639482,
+          "readable": false
+        },
+        {
+          "path": "tests/fixtures/optimizer/tpc-ds/web_sales.csv.gz",
+          "bytes": 615903,
+          "readable": false
+        },
+        {
+          "path": "tests/fixtures/optimizer/tpc-ds/tpc-ds.sql",
+          "bytes": 483900,
+          "readable": true
+        },
+        {
+          "path": "tests/fixtures/optimizer/tpc-ds/store_sales.csv.gz",
+          "bytes": 421923,
+          "readable": false
+        }
+      ],
+      "total_bytes": 16002182,
+      "readable_bytes": 8516945,
+      "file_count": 355,
+      "readable_file_count": 309,
+      "python_file_count": 249,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "flask",
+      "group": "memorization_check",
+      "domain": null,
+      "url": "https://github.com/pallets/flask",
+      "sha": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "uv.lock",
+          "bytes": 310299,
+          "readable": true
+        },
+        {
+          "path": "docs/_static/debugger.png",
+          "bytes": 207889,
+          "readable": false
+        },
+        {
+          "path": "docs/_static/pycharm-run-config.png",
+          "bytes": 99654,
+          "readable": false
+        },
+        {
+          "path": "CHANGES.rst",
+          "bytes": 75172,
+          "readable": true
+        },
+        {
+          "path": "src/flask/app.py",
+          "bytes": 67048,
+          "readable": true
+        },
+        {
+          "path": "tests/test_basic.py",
+          "bytes": 56091,
+          "readable": true
+        }
+      ],
+      "total_bytes": 1851251,
+      "readable_bytes": 1511319,
+      "file_count": 236,
+      "readable_file_count": 231,
+      "python_file_count": 83,
+      "breached": null,
+      "partial": false
+    },
+    {
+      "name": "requests",
+      "group": "memorization_check",
+      "domain": null,
+      "url": "https://github.com/psf/requests",
+      "sha": "414f0513c33883adf6f2b46901d4f0b38a455851",
+      "mode": "full",
+      "largest_files": [
+        {
+          "path": "ext/requests-logo.ai",
+          "bytes": 2189478,
+          "readable": true
+        },
+        {
+          "path": "ext/requests-logo.svg",
+          "bytes": 883794,
+          "readable": true
+        },
+        {
+          "path": "docs/_static/requests-sidebar.png",
+          "bytes": 306086,
+          "readable": false
+        },
+        {
+          "path": "ext/requests-logo-compressed.png",
+          "bytes": 192073,
+          "readable": false
+        },
+        {
+          "path": "ext/requests-logo.png",
+          "bytes": 192073,
+          "readable": false
+        },
+        {
+          "path": "tests/test_requests.py",
+          "bytes": 111628,
+          "readable": true
+        }
+      ],
+      "total_bytes": 4470705,
+      "readable_bytes": 3756453,
+      "file_count": 130,
+      "readable_file_count": 125,
+      "python_file_count": 37,
+      "breached": null,
+      "partial": false
+    }
+  ],
+  "errors": []
+}
