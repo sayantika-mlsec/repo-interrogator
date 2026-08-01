@@ -1,7 +1,22 @@
 """Filesystem primitives used by the workspace layer.
 
-Three jobs: delete a git clone on Windows without failing, measure a tree
-cheaply, and refuse to resolve a path outside a root directory.
+Four jobs: delete a git clone on Windows without failing, decide whether a file
+holds text, measure a tree, and refuse to resolve a path outside a root
+directory.
+
+MEASUREMENT
+-----------
+A working tree has two sizes that matter, and they are not the same number.
+
+The first is what lands on disk. That bounds clone time, temp-space use, and
+how badly a pathological repository can hurt the machine.
+
+The second is what the agent can actually put in front of a model: files that
+decode as text. A repository of documentation videos has an enormous first
+number and a small second one. Measuring only the first rejects repositories
+for their screenshots.
+
+So ``measure_tree`` returns both, from one traversal.
 """
 
 from __future__ import annotations
@@ -10,6 +25,7 @@ import os
 import shutil
 import stat
 from collections.abc import Iterator
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .errors import PathEscapeError
@@ -82,50 +98,6 @@ def iter_files(root: Path) -> Iterator[Path]:
                 yield p
 
 
-def measure_tree(root: Path, *, max_bytes: int, max_files: int) -> tuple[int, int]:
-    """Return ``(total_bytes, file_count)``, stopping early once either cap is passed.
-
-    Early exit matters: on a pathological repository, walking to completion to
-    discover it is 40x over the limit costs real time for no extra information.
-    The returned values are therefore a lower bound once a cap is exceeded,
-    which is all the caller needs in order to reject.
-    """
-    total = 0
-    count = 0
-    for f in iter_files(root):
-        try:
-            total += f.stat().st_size
-        except OSError:
-            # Broken symlink or a file that vanished mid-walk. Count it, skip
-            # its size — never silently abort the measurement.
-            pass
-        count += 1
-        if total > max_bytes or count > max_files:
-            break
-    return total, count
-
-
-def resolve_within(root: Path, candidate: str | Path) -> Path:
-    """Resolve ``candidate`` relative to ``root``, or raise if it escapes.
-
-    This is the single containment check for the whole project. Every tool that
-    accepts a path from the model routes through it.
-
-    The check is done *after* resolution, not before, because string inspection
-    is not sufficient. A path can contain no ``..`` at all and still escape:
-
-        docs/link  ->  symlink to  /etc
-
-    Only the resolved absolute path tells the truth about where a path points.
-    """
-    root = root.resolve()
-    target = (root / Path(candidate)).resolve()
-    if target != root and root not in target.parents:
-        raise PathEscapeError(
-            f"path {candidate!r} resolves to {target}, outside repository root {root}"
-        )
-    return target
-
 # --- readability -----------------------------------------------------------
 
 SNIFF_BYTES = 8192
@@ -181,3 +153,148 @@ def is_probably_binary(path: Path, *, sniff: int = SNIFF_BYTES) -> bool:
 
     non_text = sum(1 for b in chunk if b not in _TEXT_BYTES)
     return non_text / len(chunk) > _NON_TEXT_RATIO
+
+
+# --- tree measurement ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TreeMeasurement:
+    """What one walk of a working tree found.
+
+    ``breached`` is the whole point of this being a type rather than a tuple.
+    A bounded walk stops at the first file past a bound, so every figure it
+    returns is a lower bound rather than a total. That distinction cannot live
+    in a docstring: a caller formatting an error message will read the number
+    and call it the tree size. Here the object itself says whether the walk
+    finished, and the rejection path is required to consult it.
+    """
+
+    total_bytes: int
+    """Every file in the working tree, text or not."""
+
+    readable_bytes: int
+    """Only files that decode as text -- what the agent can actually contend with."""
+
+    file_count: int
+    readable_file_count: int
+    python_file_count: int
+
+    breached: str | None = None
+    """Which bound stopped the walk: ``file_count``, ``total_bytes``,
+    ``readable_bytes``, or ``None`` if the walk ran to completion."""
+
+    @property
+    def partial(self) -> bool:
+        """True when the figures are lower bounds rather than totals."""
+        return self.breached is not None
+
+    @property
+    def binary_bytes(self) -> int:
+        return self.total_bytes - self.readable_bytes
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialise onto a results row, ``partial`` included explicitly.
+
+        A stored measurement that does not record whether it was complete is
+        worse than no measurement, because it looks authoritative.
+        """
+        return asdict(self) | {"partial": self.partial}
+
+
+def measure_tree(
+    root: Path,
+    *,
+    max_total_bytes: int | None = None,
+    max_readable_bytes: int | None = None,
+    max_files: int | None = None,
+) -> TreeMeasurement:
+    """Walk a working tree once and return both byte totals plus three counts.
+
+    **With no bounds passed, the walk runs to completion and every figure is
+    exact.** That is the mode a survey wants. It is the same code path the gate
+    uses, so a surveyed number and an enforced number can never come from two
+    subtly different traversals.
+
+    **With any bound passed, the walk may stop early** -- at the first file that
+    carries a running total past the bound. The saving is real: discovering that
+    a repository is forty times over the limit does not require walking it. The
+    cost is that the figures are then lower bounds, which is why the return
+    carries ``breached``.
+
+    Readability is decided by content, via ``is_probably_binary``, which reads
+    the first 8 KB of each file. That is one extra open per file and it is what
+    the second bound is buying. A file whose ``stat`` fails -- a broken symlink,
+    or one that vanished mid-walk -- is counted, contributes no bytes, and is
+    never sniffed, so it lands on the unreadable side. The measurement is never
+    silently abandoned for a single bad file.
+
+    Bounds are checked in order: file count, total bytes, readable bytes. The
+    first one crossed is the one reported.
+    """
+    total_bytes = 0
+    readable_bytes = 0
+    file_count = 0
+    readable_file_count = 0
+    python_file_count = 0
+    breached: str | None = None
+
+    for path in iter_files(root):
+        file_count += 1
+        if path.suffix == ".py":
+            python_file_count += 1
+
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = None
+
+        if size is not None:
+            total_bytes += size
+            if not is_probably_binary(path):
+                readable_bytes += size
+                readable_file_count += 1
+
+        if max_files is not None and file_count > max_files:
+            breached = "file_count"
+            break
+        if max_total_bytes is not None and total_bytes > max_total_bytes:
+            breached = "total_bytes"
+            break
+        if max_readable_bytes is not None and readable_bytes > max_readable_bytes:
+            breached = "readable_bytes"
+            break
+
+    return TreeMeasurement(
+        total_bytes=total_bytes,
+        readable_bytes=readable_bytes,
+        file_count=file_count,
+        readable_file_count=readable_file_count,
+        python_file_count=python_file_count,
+        breached=breached,
+    )
+
+
+# --- containment -----------------------------------------------------------
+
+
+def resolve_within(root: Path, candidate: str | Path) -> Path:
+    """Resolve ``candidate`` relative to ``root``, or raise if it escapes.
+
+    This is the single containment check for the whole project. Every tool that
+    accepts a path from the model routes through it.
+
+    The check is done *after* resolution, not before, because string inspection
+    is not sufficient. A path can contain no ``..`` at all and still escape:
+
+        docs/link  ->  symlink to  /etc
+
+    Only the resolved absolute path tells the truth about where a path points.
+    """
+    root = root.resolve()
+    target = (root / Path(candidate)).resolve()
+    if target != root and root not in target.parents:
+        raise PathEscapeError(
+            f"path {candidate!r} resolves to {target}, outside repository root {root}"
+        )
+    return target
