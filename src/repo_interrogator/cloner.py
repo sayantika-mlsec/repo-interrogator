@@ -67,14 +67,28 @@ class CloneLimits:
     """
 
     max_total_bytes: int = 500 * 1024 * 1024
-    """Machine guard. Generous by design -- its job is to stop a pathological
-    clone, not to shape the repo set."""
+    """Machine guard. Generous by design.
 
-    max_readable_bytes: int = 20 * 1024 * 1024
-    """The bound that actually shapes the repo set. Provisional until the full
-    pinned set has been measured; a cap set before looking at the distribution
-    is the failure this whole change exists to fix."""
+    The largest tree in the pinned set is 77 MB, so this never fires on the
+    current repositories. That is correct: its job is stopping a pathological
+    clone, not filtering content. Tightening it toward the observed maximum
+    would make it a second, cruder content filter and reintroduce exactly the
+    conflation the readable cap replaced -- a repository would once again be
+    rejected for the weight of its screenshots.
+    """
 
+    max_readable_bytes: int = 16 * 1024 * 1024
+    """The bound that shapes the repository set.
+
+    Set from measurement, not from judgement about what sounds reasonable.
+    Readable content across the twelve pinned repositories runs from 0.3 MB to
+    8.5 MB; this sits just under twice that maximum, so a repository half again
+    larger than the largest in the set still enters, and one twice as large does
+    not.
+
+    It is the tight bound deliberately. Readable bytes are what the agent has to
+    contend with, and that is the resource worth being strict about.
+    """
     max_files: int = 10_000
     timeout_s: int = 300
     min_python_files: int = 5

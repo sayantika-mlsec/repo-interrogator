@@ -352,3 +352,37 @@ phrasing is derived from that rather than chosen by whoever writes the message.
 The bound values are placeholders. Setting a number before seeing the distribution across 
 the pinned set is the mistake this change exists to correct, so calibration waits for the survey. 
 First figures: `structlog` measures 2.2 MB tree against 0.9 MB readable.
+
+## Entry 7 — the bounds, set from measurement
+
+All twelve pinned repositories were measured at their commits with cap
+enforcement disabled, so every figure is a complete walk rather than a lower
+bound. Readable content runs from 0.3 MB to 8.5 MB; trees run from 0.3 MB to
+77 MB; file counts from 15 to 979. Every repository is analyzable and the set is
+frozen.
+
+The two-bound change turned out to be load-bearing more narrowly than the
+original rejection suggested. `instructor`, the repository that prompted it,
+measures 77 MB of tree against 6.6 MB of readable content. But `ragas` measures
+48.9 MB against 5.2 MB — it passed the old 50 MB ceiling with 1.1 MB to spare.
+Two more documentation GIFs and it would have failed the same way, and there
+would have been nothing in its rejection to connect it to the first.
+
+The readable cap goes to 16 MB, just under twice the observed maximum: a
+repository half again larger than the largest measured still enters, one twice as
+large does not. The total guard stays at 500 MB and the file count at 10,000.
+Neither fires on anything in this set, which is correct — their job is stopping a
+pathological clone, not filtering content, and tightening them toward the
+observed maxima would make them a second, cruder content filter and reintroduce
+the conflation the readable cap replaced.
+
+Two things the aggregate figures hid, both visible only because the largest files
+were recorded per repository. `nids` reports 8.3 MB readable, of which 8.2 MB is
+a single generated HTML report; its actual source is roughly 0.1 MB. That file
+also exceeds the per-file read ceiling, so it counts toward the readable budget
+and cannot be read — the interaction between the two limits was recorded earlier
+as a small conservative overcount, and is in fact the largest single contributor
+to the readable maximum in the development set. And the annotation predicting
+that `sqlglot` would stress the file-count cap was wrong: it has 355 files
+against `instructor`'s 979 and `typer`'s 773. The note is corrected rather than
+deleted.
