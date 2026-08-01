@@ -330,3 +330,25 @@ still returns line numbers under the numbering ablation, so the model can obtain
 them from search even when `read_file` withholds them — a genuine interaction
 between two tools, unfixable without making search useless, to be reported
 alongside the ablation result.
+
+## Entry 6 — the size cap measured the wrong bytes.
+
+A pinned repository was rejected at the 50 MB working-tree ceiling. 
+Its `docs/` directory alone exceeds that; its four largest files are 
+documentation screen recordings of 12.0, 9.2, 7.5 and 3.7 MB, and everything 
+readable totals roughly 7 MB. The cap was measuring blob weight while claiming 
+to measure code weight.
+
+The fix is two bounds rather than a bigger one. A total-tree guard protects 
+the machine from an enormous clone; a readable-bytes cap bounds what the agent actually 
+contends with. They guard different resources, and a repository can breach either alone.
+
+A second defect surfaced while writing it. The measurement stops at the first file past a 
+bound, which makes its figures lower bounds rather than totals — and nothing in the 
+return recorded that, so a rejection message could report where counting stopped as though 
+it were the tree size. The measurement now states which bound stopped it, and the "at least" 
+phrasing is derived from that rather than chosen by whoever writes the message.
+
+The bound values are placeholders. Setting a number before seeing the distribution across 
+the pinned set is the mistake this change exists to correct, so calibration waits for the survey. 
+First figures: `structlog` measures 2.2 MB tree against 0.9 MB readable.
