@@ -56,6 +56,17 @@ class RepoTooLargeError(WorkspaceError):
     """Working tree exceeds the configured byte ceiling."""
 
 
+class ReadableBytesTooLargeError(WorkspaceError):
+    """Text content the agent could actually read exceeds its ceiling.
+
+    Distinct from ``RepoTooLargeError``, which guards the machine against an
+    enormous clone. This one guards the agent against an enormous amount of
+    readable surface. A repository of documentation videos trips the first and
+    not the second; a monorepo of source trips the second and maybe not the
+    first. Collapsing them would make the rejection reason unrecoverable.
+    """
+
+
 class TooManyFilesError(WorkspaceError):
     """Working tree exceeds the configured file-count ceiling."""
 
