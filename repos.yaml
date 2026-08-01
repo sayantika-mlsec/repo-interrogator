@@ -77,7 +77,10 @@ held_out:
     url: https://github.com/tobymao/sqlglot
     sha: 1fd3bb970bfb4dbca5a764eb9dd3f9a0ff45000f
     domain: sql-parser-transpiler
-    note: file-heavy (dialects/, optimizer/) - stress-tests file-count cap
+    note: >-
+      dense Python relative to its size - 249 .py files in 16 MB, and the
+      largest fixture directory in the set. Not the file-count maximum
+      instructor (979) and typer (773) both exceed its 355.
 
 memorization_check:
   - name: flask
