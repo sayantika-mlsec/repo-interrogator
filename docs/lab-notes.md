@@ -386,3 +386,106 @@ to the readable maximum in the development set. And the annotation predicting
 that `sqlglot` would stress the file-count cap was wrong: it has 355 files
 against `instructor`'s 979 and `typer`'s 773. The note is corrected rather than
 deleted.
+
+## Entry 8 — The agent loop
+
+Two issues. The tool layer gained its fourth tool; the agent layer now exists.
+
+### Symbol access as a tool
+
+`get_symbols` returns the definitions in one file with their line ranges. The
+path is required. A whole-repository dump runs to thousands of entries on a real
+project, and a tool whose purpose is to save steps would end a run by consuming
+the context needed to read code. `max_symbol_entries` (200) bounds it like every
+other response.
+
+`FileTools` now takes `symbol_index` as a keyword argument rather than building
+one. Building an index requires the symbol layer, which requires the workspace
+layer, and the tools would then depend transitively on the cloner in order to
+read a file. The caller already holds the index.
+
+`build_index_at(root, name, sha)` was split out of `build_symbol_index(repo)`,
+which now delegates to it after checking the analysis mode. The mode check stays
+with the clone record, the only thing that knows about modes. `build_index_at`
+takes no mode argument: a parameter with exactly one legal value is a parameter
+that will eventually be passed the wrong one.
+
+`SymbolsUnavailableError` is a `ToolError`, not a `SymbolError`. It reaches the
+model as an observation it can act on by switching to search. The symbol layer's
+own version is a fact about the repository that the caller must handle before a
+run starts.
+
+The 84 existing tool assertions pass unchanged; the new parameter is
+keyword-only.
+
+### The loop
+
+Five tools, `finish` among them. `finish` carries the questions as its argument
+rather than the loop parsing them out of a final text turn. Termination becomes
+a row in the same trace table as every other call, and output cannot be
+separated from termination — there is no run that stopped without producing
+questions, and none that produced questions without stopping.
+
+`finish` writes validated objects into a collector rather than returning them. A
+tool's return value is rendered to a string for the model; recovering questions
+from that rendering would mean re-parsing our own formatting, and any lossy step
+would be silent corruption. Validation happens once, at the boundary.
+
+Questions are Pydantic-validated with at least one citation each. A question
+with no citation cannot be verified, and an unverifiable question in an output
+set would be scored as if it had passed a check it never took. Citations are
+1-based inclusive, matching both the symbol layer and `read_file`.
+
+`ToolError` is caught in each wrapper and returned to the model as an
+observation, and still costs a step — otherwise a model failing every call runs
+forever for free. Everything else propagates. `PathEscapeError` is a
+`WorkspaceError`, so an escape attempt kills the run instead of becoming a hint.
+
+A `ToolMessage` arriving with `status == "error"` raises. Legitimate tool errors
+come back as ordinary content, so an error status means something escaped a
+wrapper and was absorbed by the framework. That is the failure mode
+`_safe_extract_text()` produced on the previous project, in a new place.
+
+Both budgets raise. The check sits between receiving one stream state and
+requesting the next, so a breach stops the run before the next call is
+dispatched rather than after it has been billed. A test asserts the dispatch
+count equals the ceiling; it would exceed it by one if the check ran afterwards.
+
+### Verified against the provider, not assumed
+
+A two-turn probe (`scripts/probe_signatures.py`) ran before any loop code was
+written. Four findings, none of them derivable from documentation:
+
+1. **Thinking tokens were 75 of 103 output tokens — 73%.** They bill as output.
+   The budget counts `total_tokens`; a budget on visible output would have been
+   wrong by roughly four times.
+2. **`gemini-3.5-flash` is global-endpoint only.** A regional endpoint returns
+   404. `location=global` is a property of the model and belongs on the results
+   row.
+3. **Thought signatures survive an append-whole message list**, stored in
+   `additional_kwargs['__gemini_function_call_thought_signatures__']`. This is a
+   standing constraint, not a note: assistant turns are appended, never rebuilt,
+   filtered, or summarised. Any future context-trimming work operates on tool
+   observations only. Rewriting an assistant turn breaks tool calling on the
+   second call of a run.
+4. **A pure tool call returns content as a list of zero blocks.** The trace
+   store logs blocks, not rendered text, or most steps would record as empty
+   strings and read as a broken model.
+
+A live check confirmed the generated tool schema is accepted as written. The two
+optional integer parameters on `read_file` serialise as `anyOf: [integer, null]`,
+which older stacks rejected; this one does not. No sentinel workaround was
+needed, and the honest schema ships.
+
+### Recorded, not solved
+
+Open question 7 gains a second instance. `get_symbols` reports line ranges
+regardless of the numbering configuration, so the model can obtain line numbers
+from the symbol index as well as from search. Suppressing them would leave a
+tool that names definitions without locating them, which is not a tool. Reported
+alongside the ablation result; the ablation set stays frozen.
+
+### Assertions
+
+`smoke_tools.py` 84 (unchanged). `smoke_agent.py` 37 offline, 42 with the live
+run.
