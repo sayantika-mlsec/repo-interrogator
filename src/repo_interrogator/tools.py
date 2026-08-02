@@ -1,6 +1,6 @@
-"""Model-facing repository access: list, read, search.
+"""Model-facing repository access: list, read, search, symbols.
 
-These are three of the agent's five tools. Two properties shape every decision
+These are four of the agent's five tools. Two properties shape every decision
 below, and neither is obvious from the signatures.
 
 **The paths come from the model.** Not from a config file, not from a
@@ -49,6 +49,13 @@ marker. A header reading "lines 40-80 of 320" would hand back exactly the
 information the ablation removes, leaving the model to count within a block
 whose offset it was told. The ablation would then measure something much weaker
 than it claims to.
+
+A second consequence, recorded rather than fixed: ``get_symbols`` reports line
+ranges regardless of ``number_lines``, so under that ablation the model can
+still obtain line numbers from the symbol index -- as it can from
+``search_code``. Suppressing them would leave a tool that names definitions
+without locating them, which is not a tool at all. The interaction is reported
+alongside the ablation result.
 """
 
 from __future__ import annotations
@@ -60,6 +67,7 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .errors import (
     BinaryFileError,
@@ -71,9 +79,16 @@ from .errors import (
     NotAFileError,
     RipgrepNotAvailableError,
     SearchFailedError,
+    SymbolsUnavailableError,
     ToolConfigurationError,
 )
 from .fsutil import SKIP_DIRS, is_probably_binary, iter_files, resolve_within
+
+if TYPE_CHECKING:
+    # Type-checking only. A runtime import would pull in the symbol layer, which
+    # imports the workspace layer, and the tools would then depend on the cloner
+    # in order to read a file.
+    from .symbols import Symbol, SymbolIndex
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +106,7 @@ class ToolConfig:
     max_read_lines: int = 400
     max_list_entries: int = 1500
     max_search_matches: int = 80
+    max_symbol_entries: int = 200
     max_response_chars: int = 24_000
     max_line_chars: int = 400
     max_file_bytes: int = 8 * 1024 * 1024
@@ -152,24 +168,45 @@ class SearchResult:
     text: str
 
 
+@dataclass(frozen=True)
+class SymbolsResult:
+    path: str
+    symbols: tuple[Symbol, ...]
+    total_found: int
+    truncated: bool
+    text: str
+
+
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
 class FileTools:
-    """The three file-access tools, bound to one repository at one commit.
+    """The four repository-access tools, bound to one repository at one commit.
 
     A class rather than free functions so that the root, the configuration and
     the ripgrep dependency are resolved once, at construction. A missing
     ``rg`` discovered fifty steps into an agent run has already wasted the run.
+
+    The symbol index is passed in rather than built here. Building it requires
+    the symbol layer, which requires the workspace layer, and the tools would
+    then transitively depend on the cloner in order to read a file. The caller
+    already has the index; handing it over costs nothing.
     """
 
-    def __init__(self, root: Path, config: ToolConfig | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        config: ToolConfig | None = None,
+        *,
+        symbol_index: SymbolIndex | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ToolConfigurationError(f"repository root is not a directory: {self.root}")
 
         self.config = config or ToolConfig()
+        self._index = symbol_index
 
         self._rg = shutil.which("rg")
         if self._rg is None:
@@ -558,3 +595,60 @@ class FileTools:
                 )
             )
         return out
+
+    # --- get_symbols -------------------------------------------------------
+
+    def get_symbols(self, path: str) -> SymbolsResult:
+        """Every definition in one file, with its line range.
+
+        The path is required. A whole-repo dump runs to thousands of entries on
+        a real repository, and a tool that exists to save steps would end the
+        run by consuming the context needed to read code.
+
+        Ranges come from the index, so they are the same 1-based inclusive
+        numbers ``read_file`` accepts. The model can go from a name to a read
+        without counting anything.
+        """
+        cfg = self.config
+        if self._index is None:
+            raise SymbolsUnavailableError(
+                "this repository has no symbol index (no parseable Python). "
+                "Use list_files and search_code instead."
+            )
+
+        abs_path = self._resolve_file(path)
+        rel = self._rel(abs_path)
+        found = self._index.by_file(rel)
+        total = len(found)
+
+        kept: list[Symbol] = []
+        rendered: list[str] = []
+        used = 0
+        truncated = False
+        for sym in found:
+            line = (
+                f"{sym.qualname} ({sym.kind.value}) "
+                f"lines {sym.start_line}-{sym.end_line} | {sym.signature}"
+            )
+            if len(kept) >= cfg.max_symbol_entries or (
+                used + len(line) + 1 > cfg.max_response_chars and kept
+            ):
+                truncated = True
+                break
+            kept.append(sym)
+            rendered.append(line)
+            used += len(line) + 1
+
+        if rendered:
+            body = "\n".join(rendered)
+        elif rel.endswith(".py"):
+            body = "(no definitions in this file)"
+        else:
+            body = "(not a Python file; the symbol index covers .py only)"
+        if truncated:
+            body += f"\n… {total - len(kept)} more not shown ({total} total)"
+
+        return SymbolsResult(
+            path=rel, symbols=tuple(kept), total_found=total,
+            truncated=truncated, text=body,
+        )
