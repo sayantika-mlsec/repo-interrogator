@@ -172,3 +172,39 @@ class InvalidLineRangeError(ToolError):
 
 class SearchFailedError(ToolError):
     """ripgrep exited with an error, or emitted output that could not be read."""
+
+class SymbolsUnavailableError(ToolError):
+    """``get_symbols`` was called where no symbol index exists.
+
+    A ``ToolError`` and not a ``SymbolError`` on purpose: this reaches the model
+    as an observation it can act on by switching to search, whereas the symbol
+    layer's version of this is a fact about the repository that the caller must
+    handle before a run starts.
+    """
+
+# --- agent layer -----------------------------------------------------------
+
+
+class AgentError(RepoInterrogatorError):
+    """Base class for the agent loop. Never raised directly."""
+
+
+class AgentConfigurationError(AgentError):
+    """The agent cannot be constructed. Raised before any spend."""
+
+
+class StepBudgetExceededError(AgentError):
+    """The run reached its model-call ceiling without finishing.
+
+    Not a warning and not a partial result. A run that stopped short still
+    produced questions, and those questions in a results table are
+    indistinguishable from ones a completed run produced.
+    """
+
+
+class TokenBudgetExceededError(AgentError):
+    """The run reached its token ceiling without finishing."""
+
+
+class NoFinishError(AgentError):
+    """The loop ended without ``finish`` being called, so nothing was produced."""
