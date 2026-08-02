@@ -257,26 +257,19 @@ def symbols_in_file(repo_root: Path, relative_path: str | Path) -> list[Symbol]:
     return list(_walk(tree.root_node, raw, rel, ""))
 
 
-def build_symbol_index(repo: ClonedRepo) -> SymbolIndex:
-    """Index every ``.py`` file in a cloned repository.
+def build_index_at(root: Path, repo_name: str, sha: str) -> SymbolIndex:
+    """Index every ``.py`` file under ``root``.
 
-    Per-file failures are collected, not raised: one Python 2 file in a vendored
-    directory should not void the other four hundred. They are counted and
-    returned so the caller can see the shape of what was missed.
+    Takes a directory rather than a ``ClonedRepo`` so that indexing does not
+    require the workspace layer. The agent receives a tree someone else cloned,
+    and a smoke test builds one in a temp directory; neither should have to
+    construct a clone record to get a symbol map.
     """
-    if repo.mode is AnalysisMode.TEXT_ONLY:
-        raise SymbolIndexUnavailableError(
-            f"{repo.name}: cloned in text-only mode, no symbol index exists. "
-            "Use search_code and read_file instead."
-        )
-
-    root = repo.path.resolve()
+    root = root.resolve()
     symbols: list[Symbol] = []
     failures: list[tuple[str, str]] = []
     indexed = 0
 
-    # Same traversal as every other tool, so the file set the indexer sees and
-    # the file set list_file s reports can never disagree.
     for abs_path in iter_files(root):
         if abs_path.suffix != ".py":
             continue
@@ -290,18 +283,24 @@ def build_symbol_index(repo: ClonedRepo) -> SymbolIndex:
     if failures:
         log.warning(
             "%s @ %s: %d of %d python files failed to index",
-            repo.name, repo.sha[:8], len(failures), indexed + len(failures),
+            repo_name, sha[:8], len(failures), indexed + len(failures),
         )
-
-    log.info(
-        "%s @ %s: %d symbols across %d files",
-        repo.name, repo.sha[:8], len(symbols), indexed,
-    )
+    log.info("%s @ %s: %d symbols across %d files", repo_name, sha[:8], len(symbols), indexed)
 
     return SymbolIndex(
-        repo_name=repo.name,
-        sha=repo.sha,
+        repo_name=repo_name,
+        sha=sha,
         symbols=tuple(symbols),
         files_indexed=indexed,
         failures=tuple(failures),
     )
+
+
+def build_symbol_index(repo: ClonedRepo) -> SymbolIndex:
+    """Index a cloned repository. Mode check, then delegate."""
+    if repo.mode is AnalysisMode.TEXT_ONLY:
+        raise SymbolIndexUnavailableError(
+            f"{repo.name}: cloned in text-only mode, no symbol index exists. "
+            "Use search_code and read_file instead."
+        )
+    return build_index_at(repo.path, repo.name, repo.sha)
