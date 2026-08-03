@@ -28,59 +28,18 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-
-import yaml
 
 from repo_interrogator.cloner import CloneLimits, cloned_repo, git_available
 from repo_interrogator.errors import RepoInterrogatorError
 from repo_interrogator.fsutil import is_probably_binary, iter_files
+from repo_interrogator.repos import RepoEntry, load_entries
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s")
 log = logging.getLogger("survey")
 
-GROUPS = ("dev", "held_out", "memorization_check")
 PLACEHOLDER = "<FILL>"
 TOP_FILES = 6
-
-
-@dataclass(frozen=True)
-class RepoEntry:
-    name: str
-    url: str
-    sha: str
-    group: str
-    domain: str | None
-
-
-def load_entries(path: Path) -> tuple[list[RepoEntry], str | None]:
-    """Read repos.yaml into a flat list, preserving which group each came from.
-
-    Group membership is carried through rather than discarded, because a
-    held-out repository excluded by a bound is a different problem from a dev
-    repository excluded by one: the first changes the number the project
-    reports, the second only changes what is convenient to develop against.
-    """
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    entries: list[RepoEntry] = []
-    for group in GROUPS:
-        for item in raw.get(group) or []:
-            entries.append(
-                RepoEntry(
-                    name=item["name"],
-                    url=item["url"],
-                    sha=item["sha"],
-                    group=group,
-                    domain=item.get("domain"),
-                )
-            )
-    # PyYAML parses an unquoted 2026-07-28 as a datetime.date. YAML has a date
-    # type and JSON does not, so it is converted here, at the boundary where the
-    # type is known, rather than by handing json.dumps a custom encoder that
-    # would silently stringify anything unexpected arriving later.
-    pinned_on = raw.get("pinned_on")
-    return entries, str(pinned_on) if pinned_on is not None else None
 
 
 def largest_files(root: Path, n: int = TOP_FILES) -> list[dict[str, object]]:
