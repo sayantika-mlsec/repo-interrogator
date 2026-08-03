@@ -489,3 +489,95 @@ alongside the ablation result; the ablation set stays frozen.
 
 `smoke_tools.py` 84 (unchanged). `smoke_agent.py` 37 offline, 42 with the live
 run.
+
+## Entry 9 — First full run
+
+First end-to-end run. Until today every layer was tested alone: the workspace
+layer cloned and verified a pin, the symbol layer indexed a tree, the tools read
+and searched one, and the agent ran a bounded loop over tools built in a fixture
+directory. Nothing had run all four in one call stack.
+
+### What was built
+
+`repos.py` and `runner.py` in the package, `run_repo.py` as a thin entry point.
+
+The pin-file loader moved out of the survey script into the package. A package
+cannot import from a script directory, so the alternative was a second YAML
+parser, and two readers of a pin file drift on the field that matters — the
+commit id. The survey's original function signature is kept as a wrapper so that
+script changed by one import line.
+
+The runner sequences and owns no policy except one. Held-out repositories are
+refused unless the caller asks for them explicitly and states a reason, and the
+read is appended to `docs/held-out-reads.md` before the clone begins. Written
+before rather than after, because a read that crashed halfway is still a read:
+the repository was fetched and its output may have been seen, and nothing about
+that is undone by a later exception. Until now the discipline was protected by
+remembering, on every invocation, for a month. It is now a file that can be
+counted.
+
+Text-only repositories degrade rather than abort — four tools instead of five,
+logged, and recorded on the result so a four-tool run is never mistaken for a
+five-tool one. Every run writes its full trajectory to JSON, serialised through
+each message's own `model_dump` rather than rendered to text, because a rendered
+message loses the content blocks and the thought signature this provider
+requires on the following call.
+
+Two changes ahead of the runner: the agent's task string is now sent verbatim
+instead of being assembled from a question count that silently discarded the
+caller's string, and an empty task raises rather than producing a run whose
+prompt is not recoverable from its own trace.
+
+### The run
+
+`nids`, ten questions, no crashes. Twenty symbols across seven files, five tools,
+seventeen model calls, seventeen tool calls, zero tool errors, 181,695 tokens,
+63 seconds.
+
+Two citations were resolved by hand. One names a single line and lands exactly on
+it; one spans a seventeen-line region and covers what the question asks about.
+The 1-based inclusive contract holds from the symbol layer through the tools,
+through the model, and out into a citation.
+
+### What the output shows
+
+Three observations, recorded rather than acted on. No baseline has been read yet,
+and changing anything now would make the first number meaningless.
+
+**Questions state their own answers.** Two of ten name the identifier or quote
+the phrase the question asks about. A question carrying its answer cannot
+discriminate between a reader who understood the repository and one who did not.
+
+**At least three questions are grounded in prose the repository's author wrote,
+not in inferred behaviour.** The strongest case cites a line whose "why" exists
+only in its trailing comment; another takes its framing from a comment two lines
+above the cited region. The citations are valid — the comment is on the cited
+line — but reading a comment and asking about it is a weaker capability than
+reading code and working out what it does.
+
+This matters for the documentation-exclusion control. That control removes
+documentation files, and the paraphrasing seen here is happening in inline
+comments, which it will not remove. The control as specified may therefore
+measure less than intended. Recorded now, before the control runs, so its result
+is interpretable rather than surprising.
+
+**Several questions are compound**, asking two things joined by "and". Relevant
+to any per-question scoring later.
+
+### Cost
+
+At roughly 180k tokens per run, a full sweep of the set is near 1.8M, and the
+comparison work planned against it multiplies that several times over. A billing
+budget alert should exist before the first full sweep, not after it.
+
+The step ceiling was thirty and seventeen were used. It stays where it is: the
+ablation that removes structural symbol extraction makes navigation more
+expensive by design, and a ceiling tuned to the cheapest configuration would
+raise instead of producing a measurable result.
+
+### Found while working
+
+Running the survey narrowed to one repository still overwrites the full
+measurement record. The flag narrows the input and not the output, so a
+convenience invocation destroys the frozen figures the size bounds were read
+from. Restored from history; filed separately.
