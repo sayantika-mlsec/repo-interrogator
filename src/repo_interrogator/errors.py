@@ -208,3 +208,27 @@ class TokenBudgetExceededError(AgentError):
 
 class NoFinishError(AgentError):
     """The loop ended without ``finish`` being called, so nothing was produced."""
+
+# --- runner layer ----------------------------------------------------------
+
+
+class RunnerError(RepoInterrogatorError):
+    """Base class for the end-to-end runner. Never raised directly."""
+
+
+class HeldOutReadError(RunnerError):
+    """A held-out repository was going to be run without being asked for.
+
+    Held-out repositories are scored exactly twice. Between those reads they are
+    never run, inspected or debugged against, and the dev/held-out gap is the one
+    number here that cannot be re-earned. Refusing by default makes the two
+    legitimate reads deliberate acts rather than ordinary invocations.
+    """
+
+
+class LedgerUnwritableError(RunnerError):
+    """A held-out read could not be recorded, so it does not happen.
+
+    Fatal rather than a warning. An unrecorded read is exactly the read the
+    ledger exists to catch.
+    """
