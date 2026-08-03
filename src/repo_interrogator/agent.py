@@ -29,6 +29,21 @@ discovered by the verifier three days later. The verifier's job is to check
 whether a citation *resolves*; it should never also be checking whether the
 citation is *well formed*.
 
+THE TASK STRING IS SENT VERBATIM
+--------------------------------
+``run`` takes one task string and sends it as the human turn unchanged. Nothing
+is interpolated inside this layer.
+
+The reason is that the message list is the run's record. If the prompt were
+assembled here from separate arguments, reproducing a row would require knowing
+every argument *and* the interpolation rule, and a prompt variant would exist
+only as a parameter value that got formatted away. Sending an authored string
+means the prompt in the trace is the prompt that was written, and a future
+variant is visible in the message list rather than implied by a call signature.
+
+``default_task()`` supplies the standard wording. Callers may substitute their
+own.
+
 BUDGETS ARE ENFORCED BEFORE THE SPEND, NOT AFTER
 ------------------------------------------------
 Both budgets are checked before the next model call is dispatched, never after
@@ -224,6 +239,20 @@ of this kind would produce.
 Every citation must point at a range you read. When you are done, call finish."""
 
 
+def default_task(n_questions: int = 10) -> str:
+    """The standard task string. Callers may substitute their own.
+
+    A function rather than a constant carrying a format placeholder: a caller
+    who forgets to format a constant sends the model a literal brace, and the
+    run still completes -- producing a real result against a prompt nobody
+    intended. A function cannot be used un-called.
+    """
+    return (
+        f"Produce {n_questions} questions about this repository. "
+        "Investigate first; call finish when you are done."
+    )
+
+
 def _render_tool_error(exc: ToolError) -> str:
     """Turn a tool failure into an observation the model can act on.
 
@@ -403,22 +432,30 @@ class RepoAgent:
 
     # --- run ---------------------------------------------------------------
 
-    def run(self, task: str, *, n_questions: int = 10) -> RunResult:
+    def run(self, task: str) -> RunResult:
         """Generate questions about the repository. Raises on any budget breach.
+
+        ``task`` is sent verbatim as the human turn. Nothing is interpolated
+        here, so the prompt recorded in ``RunResult.messages`` is the prompt that
+        was authored -- see the module docstring. ``default_task()`` supplies the
+        standard wording.
 
         The stream is consumed lazily, and the budget check sits between
         receiving one state and asking for the next. Because the generator does
         no work until it is advanced, raising here stops the run *before* the
         next model call is dispatched rather than after it has been paid for.
         """
+        if not task or not task.strip():
+            raise AgentConfigurationError(
+                "task is required and has no default. An empty human turn produces "
+                "a run whose prompt is not recoverable from its own trace."
+            )
+
         self._sink.clear()
 
         messages: list[BaseMessage] = [
             SystemMessage(SYSTEM_PROMPT),
-            HumanMessage(
-                f"Produce {n_questions} questions about this repository. "
-                "Investigate first; call finish when you are done."
-            ),
+            HumanMessage(task),
         ]
 
         steps = 0

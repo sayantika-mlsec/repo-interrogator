@@ -41,6 +41,7 @@ from repo_interrogator.agent import (
     RepoAgent,
     RunLimits,
     build_tools,
+    default_task
 )
 from repo_interrogator.errors import (
     AgentConfigurationError,
@@ -325,7 +326,13 @@ def test_construction(root: Path) -> None:
     check("limits serialise for a results row",
           RunLimits(max_steps=7).to_dict()["max_steps"] == 7)
 
-
+    agent = _make_agent(root, [], RunLimits())
+    check_raises("an empty task is refused before any spend",
+                 AgentConfigurationError, agent.run, "")
+    check_raises("a whitespace task is refused too",
+                 AgentConfigurationError, agent.run, "   ")
+    check("the standard task states its question count",
+          "3 questions" in default_task(3), default_task(3))
 # --- live ------------------------------------------------------------------
 
 
@@ -345,7 +352,7 @@ def test_live(root: Path, model_id: str) -> None:
         project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
     )
 
-    result = agent.run("questions about this fixture", n_questions=3)
+    result = agent.run(default_task(3))
 
     check("questions came back", len(result.questions) > 0)
     check("every question carries a citation",
