@@ -208,8 +208,15 @@ class RunLimits:
     max_steps: int = 30
     """Model calls, not tool calls. A step that returns a tool error still counts."""
 
-    max_total_tokens: int = 400_000
-    """Cumulative billed tokens across the run, including thinking and resent history."""
+    max_total_tokens: int = 800_000
+    """Cumulative billed tokens across the run, including thinking and resent history.
+
+    Set from a measured trajectory, not chosen. Input grows ~1.2k tokens per
+    call and every call pays for all of it again, so cumulative spend is
+    quadratic in the step count: a run that reaches the 30-step ceiling costs
+    roughly 745k. Below about 750k the token budget binds first and the step
+    budget can never fire.
+    """
 
     def to_dict(self) -> dict[str, int]:
         return {"max_steps": self.max_steps, "max_total_tokens": self.max_total_tokens}
