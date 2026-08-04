@@ -40,6 +40,7 @@ from repo_interrogator.agent import (
     Question,
     RepoAgent,
     RunLimits,
+    RunProgress,
     build_tools,
     default_task
 )
@@ -281,11 +282,20 @@ def _ai(tokens: int) -> AIMessage:
 
 
 def _make_agent(root: Path, states: list[dict], limits: RunLimits) -> RepoAgent:
+    """A ``RepoAgent`` with the model half replaced and nothing else.
+
+    ``__new__`` because ``__init__`` constructs a live client. The cost of that
+    choice is that this function has to know every attribute ``run`` touches: new
+    instance state on ``RepoAgent`` breaks it. It breaks loudly -- an
+    ``AttributeError`` on the first run -- which is the acceptable version of
+    that coupling, but it is coupling.
+    """
     agent = RepoAgent.__new__(RepoAgent)
     agent.file_tools = FileTools(root)
     agent.model_id = "fixture-model"
     agent.limits = limits
     agent._sink = []
+    agent._progress = RunProgress()
     agent._agent = _FakeAgent(states)
     return agent
 
@@ -301,10 +311,22 @@ def test_budgets(root: Path) -> None:
     check("the run stopped at the ceiling, not past it",
           agent._agent.dispatched == 5, str(agent._agent.dispatched))
 
+    # A breached run is the run most worth reading, so its counters and its
+    # trajectory outlive the exception. Without these two assertions the
+    # progress object could quietly go back to being loop-local and every
+    # failed run would again cost full price and leave nothing behind.
+    check("the breached run kept its counters",
+          agent.progress.steps == 5 and agent.progress.tokens == 500,
+          f"steps={agent.progress.steps} tokens={agent.progress.tokens}")
+    check("the breached run kept its trajectory",
+          len(agent.progress.messages) == 5, str(len(agent.progress.messages)))
+
     agent = _make_agent(root, many, RunLimits(max_steps=1000, max_total_tokens=250))
     check_raises("the token ceiling raises", TokenBudgetExceededError, agent.run, "task")
     check("tokens counted as total, not visible output",
           agent._agent.dispatched == 3, str(agent._agent.dispatched))
+    check("a token breach keeps the spend that caused it",
+          agent.progress.tokens == 300, str(agent.progress.tokens))
 
     def _messages_for(n: int) -> dict:
         return {"messages": [_ai(100)] * n}
@@ -333,6 +355,8 @@ def test_construction(root: Path) -> None:
                  AgentConfigurationError, agent.run, "   ")
     check("the standard task states its question count",
           "3 questions" in default_task(3), default_task(3))
+
+
 # --- live ------------------------------------------------------------------
 
 
