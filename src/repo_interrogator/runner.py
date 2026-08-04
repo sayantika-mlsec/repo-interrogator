@@ -15,11 +15,12 @@ WHAT THIS LAYER OWNS
 --------------------
 Sequencing, and nothing else. It clones through the workspace context manager,
 indexes through the symbol layer, constructs the agent through ``build_agent``,
-and runs it. Limits, tool configuration, the task string and the model id all
-arrive from the caller. The pin file remains the only source of URLs and SHAs.
+runs it, and writes the trajectory to disk. Limits, tool configuration, the task
+string and the model id all arrive from the caller. The pin file remains the
+only source of URLs and SHAs.
 
-The one policy it does own is the held-out guard, below, because there is
-nowhere lower to put it.
+Two policies live here because there is nowhere lower to put them: the held-out
+guard, and the rule that every run leaves an artifact.
 
 THE HELD-OUT GUARD
 ------------------
@@ -57,11 +58,29 @@ Refusing would mean this layer enforcing a constraint the layer below handles
 deliberately. The degradation is logged at warning level and recorded on the
 result, so a run with four tools is never mistaken for a run with five.
 
+EVERY RUN LEAVES AN ARTIFACT, INCLUDING THE ONES THAT FAIL
+----------------------------------------------------------
+A run that breaches a budget costs exactly what a run that finishes costs. It is
+also the more informative of the two: the trajectory is the only thing that says
+where the tokens went, whether files were read twice, or whether one directory
+listing was resent twenty times.
+
+The write therefore happens in a ``finally``, from metadata assembled *before*
+the agent is started. Nothing in that metadata -- the pin, the mode, the
+measurement, the index counts, the limits -- depends on the run succeeding, so
+there is no reason for a failure to take it down with the frame.
+
+This does not soften the rule that a partial result is never returned as a
+result. The exception still propagates, ``run_repo`` still returns nothing on
+the failure path, and a failed run is a ``FailedRun`` rather than a
+``RunRecord``: a different type, carrying no ``RunResult``, and carrying an
+``outcome`` field that names which ceiling was hit. A results table built from
+``RunRecord`` cannot accidentally contain a truncated run, and a trace file
+cannot be read as a finished one -- the outcome is in the payload and ``-failed``
+is in the filename.
+
 THE TRAJECTORY IS WRITTEN TO DISK
 ---------------------------------
-Every run costs money and produces one artifact. Printing it and discarding it
-means paying twice to look at the same thing.
-
 Messages are serialised through their own ``model_dump``, not through ``str``.
 A rendered message loses its block structure -- and on this provider a pure tool
 call returns content as a list of zero blocks, with the thought signature living
@@ -79,9 +98,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .agent import RunLimits, RunResult, build_agent, default_task
+from langchain_core.messages import BaseMessage
+
+from .agent import RunLimits, RunProgress, RunResult, build_agent, default_task
 from .cloner import CloneLimits, ClonedRepo, cloned_repo
-from .errors import HeldOutReadError, LedgerUnwritableError
+from .errors import (
+    HeldOutReadError,
+    LedgerUnwritableError,
+    NoFinishError,
+    StepBudgetExceededError,
+    TokenBudgetExceededError,
+)
 from .repos import RepoEntry
 from .symbols import SymbolIndex, build_symbol_index
 from .tools import ToolConfig
@@ -115,14 +142,60 @@ depend on it say so.
 |---|---|---|---|---|
 """
 
+COMPLETED = "completed"
+"""The one outcome that means a ``RunResult`` exists."""
+
+_OUTCOMES: dict[type[BaseException], str] = {
+    TokenBudgetExceededError: "token-budget",
+    StepBudgetExceededError: "step-budget",
+    NoFinishError: "no-finish",
+}
+"""Short outcome names for the failures this project expects to see often.
+
+Anything else records its own class name. A run killed by a provider 400, a
+containment breach or a keyboard interrupt is still worth a trace, and naming it
+by type keeps the outcome column groupable without pretending to have foreseen
+every failure.
+"""
+
+
+def _outcome_of(exc: BaseException) -> str:
+    return _OUTCOMES.get(type(exc), type(exc).__name__)
+
+
+def _messages_as_dicts(messages: list[BaseMessage] | tuple[BaseMessage, ...]) -> list[dict[str, Any]]:
+    """Messages as structured objects, never as rendered text.
+
+    ``model_dump`` keeps the content blocks and ``additional_kwargs``. The
+    thought signature this provider requires on every subsequent call lives in
+    the latter, and a rendered string does not contain it.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        try:
+            out.append(msg.model_dump())
+        except Exception as exc:  # noqa: BLE001
+            # Never silently drop a turn. A trajectory missing a message is
+            # worse than one carrying a marker saying which message is missing
+            # and why.
+            out.append(
+                {
+                    "__serialisation_failed__": True,
+                    "type": type(msg).__name__,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    return out
+
 
 @dataclass
-class RunRecord:
-    """Everything one run was, cost and produced.
+class RunMeta:
+    """Everything about a run that is known before the model is called.
 
-    Assembled rather than reconstructed later. A row that has to be pieced back
-    together from a log file and a filename is a row whose provenance depends on
-    the person doing the piecing.
+    Assembled up front rather than at the end. None of it depends on the run
+    succeeding, so holding it until after ``agent.run`` returns would mean a
+    breached run losing its pin, its mode and its measurement along with its
+    trajectory -- for no reason other than where the constructor happened to sit.
     """
 
     repo: str
@@ -147,12 +220,9 @@ class RunRecord:
 
     limits: dict[str, int]
     started_at: str
-    duration_s: float
 
-    result: RunResult = field(repr=False)
-
-    def to_row(self) -> dict[str, Any]:
-        """The flat row a results table wants. Excludes the trajectory."""
+    def base_row(self) -> dict[str, Any]:
+        """The columns a completed run and a failed run share."""
         row: dict[str, Any] = {
             "repo": self.repo,
             "sha": self.sha,
@@ -165,9 +235,30 @@ class RunRecord:
             "symbols_indexed": self.symbols_indexed,
             "symbol_failures": self.symbol_failures,
             "started_at": self.started_at,
-            "duration_s": round(self.duration_s, 2),
         }
         row.update(self.limits)
+        return row
+
+
+@dataclass
+class RunRecord(RunMeta):
+    """A completed run: everything it was, cost and produced.
+
+    Constructed only where a ``RunResult`` exists. The type is the guarantee --
+    anything holding a ``RunRecord`` is holding a run that called ``finish``.
+    """
+
+    duration_s: float
+    result: RunResult = field(repr=False)
+    trace_path: Path | None = None
+
+    outcome: str = COMPLETED
+
+    def to_row(self) -> dict[str, Any]:
+        """The flat row a results table wants. Excludes the trajectory."""
+        row = self.base_row()
+        row["outcome"] = self.outcome
+        row["duration_s"] = round(self.duration_s, 2)
         row.update(self.result.to_row())
         return row
 
@@ -175,28 +266,44 @@ class RunRecord:
         return [q.model_dump() for q in self.result.questions]
 
     def trajectory_as_dicts(self) -> list[dict[str, Any]]:
-        """Messages as structured objects, never as rendered text.
+        return _messages_as_dicts(self.result.messages)
 
-        ``model_dump`` keeps the content blocks and ``additional_kwargs``. The
-        thought signature this provider requires on every subsequent call lives
-        in the latter, and a rendered string does not contain it.
-        """
-        out: list[dict[str, Any]] = []
-        for msg in self.result.messages:
-            try:
-                out.append(msg.model_dump())
-            except Exception as exc:  # noqa: BLE001
-                # Never silently drop a turn. A trajectory missing a message is
-                # worse than one carrying a marker saying which message is
-                # missing and why.
-                out.append(
-                    {
-                        "__serialisation_failed__": True,
-                        "type": type(msg).__name__,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-        return out
+
+@dataclass
+class FailedRun(RunMeta):
+    """A run that cost money and produced no questions.
+
+    A separate type from ``RunRecord`` on purpose. The two carry the same
+    metadata and the same cost columns, so a single type with a nullable
+    ``result`` would have been shorter -- and would have made every consumer
+    responsible for remembering to check it. One that forgot would tabulate a
+    truncated run beside finished ones and nothing would say so.
+
+    ``n_questions`` is zero by construction: the loop breaks as soon as the sink
+    fills, so a run that reached this type never called ``finish``.
+    """
+
+    duration_s: float
+    outcome: str
+    error_type: str
+    error_message: str
+    progress: RunProgress = field(repr=False)
+    trace_path: Path | None = None
+
+    def to_row(self) -> dict[str, Any]:
+        row = self.base_row()
+        row["outcome"] = self.outcome
+        row["duration_s"] = round(self.duration_s, 2)
+        row["n_questions"] = 0
+        row.update(self.progress.to_dict())
+        row["error_type"] = self.error_type
+        return row
+
+    def questions_as_dicts(self) -> list[dict[str, Any]]:
+        return []
+
+    def trajectory_as_dicts(self) -> list[dict[str, Any]]:
+        return _messages_as_dicts(self.progress.messages)
 
 
 def _utc_now() -> datetime:
@@ -295,6 +402,39 @@ def _build_index(repo: ClonedRepo) -> SymbolIndex | None:
         return None
 
 
+def _build_meta(
+    entry: RepoEntry,
+    repo: ClonedRepo,
+    index: SymbolIndex | None,
+    *,
+    model_id: str,
+    location: str,
+    task: str,
+    pinned_on: str | None,
+    limits: RunLimits,
+    started: datetime,
+) -> RunMeta:
+    return RunMeta(
+        repo=entry.name,
+        url=entry.url,
+        sha=entry.sha,
+        group=entry.group,
+        domain=entry.domain,
+        pinned_on=pinned_on,
+        model_id=model_id,
+        location=location,
+        task=task,
+        mode=repo.mode.value,
+        measurement=repo.measurement.to_dict(),
+        symbols_indexed=len(index.symbols) if index else None,
+        symbol_files=index.files_indexed if index else None,
+        symbol_failures=len(index.failures) if index else 0,
+        tools_available=5 if index else 4,
+        limits=limits.to_dict(),
+        started_at=_stamp(started),
+    )
+
+
 def run_repo(
     entry: RepoEntry,
     model_id: str,
@@ -311,13 +451,20 @@ def run_repo(
     allow_held_out: bool = False,
     held_out_reason: str | None = None,
     ledger: Path = DEFAULT_LEDGER,
+    trace_dir: Path | None = None,
 ) -> RunRecord:
     """Clone at the pin, index, run the agent, and return the whole record.
 
     The clone is scoped to the context manager, so the working tree is removed
-    on the exception path as well as the success path. Nothing here catches an
-    agent failure: a run that breached a budget or never called ``finish``
-    raises, and a partial result is never returned as a result.
+    on the exception path as well as the success path.
+
+    An agent failure is recorded and then re-raised. Nothing here converts a
+    breached run into a returned value: the caller either receives a
+    ``RunRecord`` for a run that called ``finish``, or an exception. What the
+    failure path adds is a trace file, written from metadata that was complete
+    before the model was ever called.
+
+    ``trace_dir`` of ``None`` means write nothing. The run still costs the same.
     """
     _guard_held_out(
         entry,
@@ -341,6 +488,18 @@ def run_repo(
     ) as repo:
         index = _build_index(repo)
 
+        meta = _build_meta(
+            entry,
+            repo,
+            index,
+            model_id=model_id,
+            location=location,
+            task=task,
+            pinned_on=pinned_on,
+            limits=run_limits,
+            started=started,
+        )
+
         agent = build_agent(
             repo.path,
             model_id,
@@ -350,43 +509,71 @@ def run_repo(
             location=location,
             project=project,
         )
-        result = agent.run(task)
 
-        return RunRecord(
-            repo=entry.name,
-            url=entry.url,
-            sha=entry.sha,
-            group=entry.group,
-            domain=entry.domain,
-            pinned_on=pinned_on,
-            model_id=model_id,
-            location=location,
-            task=task,
-            mode=repo.mode.value,
-            measurement=repo.measurement.to_dict(),
-            symbols_indexed=len(index.symbols) if index else None,
-            symbol_files=index.files_indexed if index else None,
-            symbol_failures=len(index.failures) if index else 0,
-            tools_available=5 if index else 4,
-            limits=run_limits.to_dict(),
-            started_at=_stamp(started),
-            duration_s=time.perf_counter() - clock,
-            result=result,
-        )
+        record: RunRecord | None = None
+        failed: FailedRun | None = None
+        try:
+            result = agent.run(task)
+            record = RunRecord(
+                **vars(meta),
+                duration_s=time.perf_counter() - clock,
+                result=result,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            # Caught to record, never to handle. Broad on purpose: a provider
+            # 400, a containment breach and a keyboard interrupt all leave a
+            # trajectory worth reading, and narrowing this to the project's own
+            # error types would keep exactly the surprising failures unrecorded.
+            failed = FailedRun(
+                **vars(meta),
+                duration_s=time.perf_counter() - clock,
+                outcome=_outcome_of(exc),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                progress=agent.progress,
+            )
+            raise
+        finally:
+            target = record or failed
+            if target is not None and trace_dir is not None:
+                try:
+                    path = write_trace(target, trace_dir)
+                    target.trace_path = path
+                    if failed is not None:
+                        # Logged rather than printed: the caller is about to see
+                        # the exception, and the trace path is the one thing the
+                        # exception does not carry.
+                        log.error(
+                            "%s failed (%s). Trajectory kept: %s",
+                            target.repo,
+                            target.outcome,
+                            path,
+                        )
+                except OSError as write_exc:
+                    # Never mask the original failure with a filesystem one.
+                    log.error("could not write trace for %s: %s", target.repo, write_exc)
+
+        return record
 
 
-def write_trace(record: RunRecord, trace_dir: Path) -> Path:
+def write_trace(record: RunRecord | FailedRun, trace_dir: Path) -> Path:
     """Write the full run to JSON and return the path.
 
     The filename carries repo, short SHA and timestamp. Two runs of the same
     repository at the same commit differ only in configuration, and a file that
     overwrote its predecessor would destroy the comparison being set up.
+
+    A run that did not complete is marked in the filename as well as in the
+    payload. The payload is authoritative; the filename is so that a directory
+    listing does not read as ten finished runs when three of them died.
     """
     trace_dir.mkdir(parents=True, exist_ok=True)
     safe_time = record.started_at.replace(":", "").replace("-", "")
-    path = trace_dir / f"{record.repo}-{record.sha[:8]}-{safe_time}.json"
+    suffix = "" if record.outcome == COMPLETED else "-failed"
+    path = trace_dir / f"{record.repo}-{record.sha[:8]}-{safe_time}{suffix}.json"
 
-    payload = {
+    payload: dict[str, Any] = {
+        "outcome": record.outcome,
         "row": record.to_row(),
         "task": record.task,
         "url": record.url,
@@ -395,6 +582,12 @@ def write_trace(record: RunRecord, trace_dir: Path) -> Path:
         "questions": record.questions_as_dicts(),
         "trajectory": record.trajectory_as_dicts(),
     }
+    if isinstance(record, FailedRun):
+        payload["error"] = {
+            "type": record.error_type,
+            "message": record.error_message,
+        }
+
     # default=str is a backstop, not a strategy: anything reaching it is a type
     # the trace store will also have to handle, and it will be visible in the
     # file as a string that should have been structured.

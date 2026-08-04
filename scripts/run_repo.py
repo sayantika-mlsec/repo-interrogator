@@ -8,6 +8,11 @@ This file parses arguments and delegates. Every decision it looks like it makes
 by a sweep, cannot be imported by a test, and changes whenever someone edits the
 script to get a different run out of it.
 
+Writing the trajectory is the runner's job, not this file's. A failed run has a
+trajectory worth keeping, and a script that wrote the trace after a successful
+call could only ever keep the successful ones. This file passes a directory and
+prints where the file landed.
+
 Held-out repositories are refused unless ``--score-held-out`` is passed together
 with ``--reason``, and the read is appended to the ledger before the clone
 begins. See the runner's module docstring for why the ledger exists.
@@ -32,7 +37,6 @@ from repo_interrogator.runner import (
     format_questions,
     format_summary,
     run_repo,
-    write_trace,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s")
@@ -61,7 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-trace",
         action="store_true",
-        help="print only. The run still costs the same; nothing is kept.",
+        help="print only. The run still costs the same; nothing is kept, "
+        "including the trajectory of a run that fails.",
     )
     p.add_argument("--workspace", type=Path, default=None)
     p.add_argument(
@@ -125,10 +130,17 @@ def main() -> int:
             allow_held_out=args.score_held_out,
             held_out_reason=args.reason,
             ledger=args.ledger,
+            trace_dir=None if args.no_trace else args.trace_dir,
         )
     except RepoInterrogatorError as exc:
         # Named rather than traced. Every error in this project is one type per
         # failure mode, so the type is the diagnosis.
+        #
+        # Narrow on purpose, and not the same catch as the runner's. That one is
+        # broad because it records and re-raises; this one is narrow because it
+        # decides what a person sees. An unexpected type should still arrive
+        # here as a traceback -- its trajectory is already on disk by the time
+        # it reaches this frame.
         print(f"\n{type(exc).__name__}: {exc}")
         return 1
 
@@ -137,9 +149,8 @@ def main() -> int:
     print()
     print(format_questions(record))
 
-    if not args.no_trace:
-        path = write_trace(record, args.trace_dir)
-        print(f"trace written to {path}")
+    if record.trace_path is not None:
+        print(f"trace written to {record.trace_path}")
 
     return 0
 
