@@ -691,3 +691,68 @@ the reason is that nothing tested the failure paths.
 - A billing alert on the cloud project is still not configured. At current cost
   a full sweep of the pinned set is near 8M tokens and the model comparison
   multiplies that.
+
+### Three more repositories, and a correction
+
+Three third-party repositories, each run once. All three reached the 30-call
+ceiling without calling finish.
+
+| repository | calls | tokens | last call |
+|---|---|---|---|
+| A | 30 | 614,689 | opening a new region of the file the run started in |
+| B | 30 | 670,828 | a fresh search for a class it had not yet looked at |
+| C | 30 | 761,362 | opening a subsystem it had not touched |
+
+The reading itself was clean in all three. No duplicated range, structural
+listing before nearly every read, and contiguous sweeps through files rather
+than jumping around. Each repository drew a different strategy — one worked file
+by file in consecutive chunks, one chased named identifiers by search across nine
+files, one walked the architecture breadth-first from entry point to backends to
+metrics. The strategy varies with the repository. The outcome does not.
+
+None of the three shows a run being cut off mid-conclusion. Each was still
+opening new ground on its last call.
+
+**Correction to the claim above.** One of the three had 11 of 17 reads preceded
+by a structural listing of the same file, not all of them, and still produced no
+tool errors — so the model guessed a range six times and guessed legally each
+time. The other two were 16/16 and 21/21. The honest statement is that the model
+rarely has to guess, with one measured exception, rather than never.
+
+**Also measured, not acted on.** The initial directory listing was around 24,000
+characters on two of the three repositories, and it is resent on every
+subsequent call. It is not the reason a run fails to terminate, but it is the
+largest single lever on cost if one is ever needed.
+
+### The one repository that terminates does so unreliably
+
+The smallest repository in the set, and the only one the agent has ever
+completed, was run a second time under identical conditions — same pin, same
+model, same task, same limits.
+
+| run | calls | tokens | questions |
+|---|---|---|---|
+| first | 17 | 181,695 | 10 |
+| second | 25 | 346,461 | 10 |
+
+It finished, five calls short of the ceiling.
+
+That result is worth less than it looks. A completion that lands that close to
+the limit is close to a coin flip, and the earlier plan to read a split between
+this repository and the others — same author, familiar shape — cannot be
+supported by a single completion on either side.
+
+**The finding is the variance.** Two runs of an identical configuration differed
+by 47% in calls and 90% in tokens. Everything downstream depends on this: an
+ablation table compares configurations by the size of a delta, and a delta
+smaller than the run-to-run spread is not a result. One run per arm would let
+noise read as effect. Replication per configuration is now a requirement, not an
+improvement.
+
+**Still unresolved:** whether the completion is a property of the repository's
+size or of its authorship. Nothing here distinguishes them.
+
+**Nothing was changed in response to any of this.** No limit raised, no prompt
+edited. Three trajectories that do not terminate and one that terminates twice
+at different costs is a good starting point for the failure taxonomy and a bad
+basis for a fix.
