@@ -581,3 +581,113 @@ Running the survey narrowed to one repository still overwrites the full
 measurement record. The flag narrows the input and not the output, so a
 convenience invocation destroys the frozen figures the size bounds were read
 from. Restored from history; filed separately.
+
+## Entry 10 — Full run on two other dev repos
+
+Three things, in the order they happened: a run that cost full price and left
+nothing behind, the fix for that, and then the two runs that fix made readable.
+
+### A failed run kept no evidence
+
+The first attempt at a large repository breached the token ceiling at 419,237
+tokens after 23 model calls. Nothing was written to disk.
+
+The trajectory was being written only on the success path. The counters and the
+message list were locals inside the agent's run loop, and the trace was written
+by the caller after a successful return, so a breach dropped both with the
+frame. This is backwards: a run that fails is the more informative of the two
+outcomes, because it is the only thing that says where the tokens went.
+
+Fixed. The counters and the message list now live on the agent as a progress
+object, a run's metadata is assembled before the model is called — none of it
+depends on the run succeeding — and the trace is written from a `finally` on
+every exit path. The progress object is deliberately not a result type: it has
+no questions and no row method, so it cannot be handed to anything that builds a
+results table. A failed run is a distinct type from a completed one, carries an
+outcome naming which ceiling was hit, and is marked in the filename as well as
+in the payload, so a directory listing does not read as ten finished runs when
+three of them died. The exception still propagates and a partial result is still
+never returned as a result.
+
+Three assertions added covering retention on the breach path. Offline smoke
+assertions for the agent layer: 40 → 43.
+
+Committed directly to the default branch rather than through a pull request,
+verified by the offline suite before landing, recorded rather than left
+implicit.
+
+### The token ceiling was unreachable by design
+
+With the fix in place the same repository breached again — 21 model calls,
+401,443 tokens — and this time the trajectory survived.
+
+Reading it showed the ceiling was not measuring what it appeared to. Each model
+call bills for the whole resent history, so cumulative spend grows with the
+square of the step count while the context grows linearly. Input rose about
+1,450 tokens per call and the context reached only 31.6k by the last call —
+nowhere near any model limit — yet the cumulative total hit 400,000 at step 21.
+The step ceiling of 30 could therefore never fire at any repository size. One of
+the two budgets was decorative.
+
+The ceiling is billed spend, not context size. Worth stating plainly because the
+number looks like a context bound and is not one.
+
+Raised to 800,000, extrapolated from the measured growth curve, on the estimate
+that a run reaching 30 steps would cost roughly 745k. Applied uniformly to every
+repository in the set: a per-repository budget would make the comparison between
+the tuning set and the reserved set partly a measure of how much room each
+repository was given.
+
+Also noted from that trajectory: output was 2,500 of 401,443 tokens, six tenths
+of one percent. The earlier probe finding that thinking dominates output tokens
+is true and irrelevant at this scale. Counting total tokens remains correct, but
+the reason is resent history, not thinking.
+
+### The agent does not converge on a large repository
+
+Re-run under the new ceiling: 30 model calls, 614,689 tokens, stopped by the
+step budget without ever calling finish. Growth had decayed to about 800 tokens
+per call, so the raised ceiling would have bought roughly 36 steps. The run
+stopped because it was told to, not because it ran out of money.
+
+The reading itself was clean, and cleaner than the earlier attempt. Twenty-one
+file reads, no duplicated range, every read preceded by a structural listing of
+the same file. The ranges are contiguous — 1416-1500 then 1501-1570, 1061-1130
+then 1131-1168, 50-95 then 96-150 — so the agent is scanning regions in
+consecutive chunks rather than jumping around. Seven files covered in a sensible
+order. Output held flat near 110 tokens per call throughout, which is a pure
+read loop with no visible deliberation about whether enough had been gathered.
+
+The last two calls return to the file the run opened with, after six others.
+That reads either as gathering up to finish or as beginning another pass, and a
+single run cannot distinguish the two.
+
+**Hypothesis, one repository, not tested.** The task says to investigate first
+and finish when done, and never defines done. On a twenty-five-file repository
+coverage is achievable and the run terminated naturally at 17 calls. On a
+979-file repository coverage is unreachable, so nothing triggers termination.
+If that is right it is a property of the prompt, not of the budget, and belongs
+in the failure taxonomy rather than in a limit.
+
+**The step ceiling stays at 30.** Raising a ceiling because a run hit it is how
+a budget stops being a measurement and becomes whatever the model happened to
+want. If it rises later it will be because a trajectory showed convergence, not
+because a run was cut short.
+
+### Resolved
+
+Zero tool errors is not evidence that the error messages are good. Every file
+read in both runs followed a structural listing of the same file, so the model
+was always working from ranges the symbol tool had already reported and never
+had to guess one. No error was provoked, so none was caught. The earlier
+suspicion that a clean first run was suspiciously clean is answered: it was, and
+the reason is that nothing tested the failure paths.
+
+### Carried forward
+
+- Whether the task is completable on a repository of this size at any budget is
+  unanswered. Two mid-sized repositories will bracket it: if both terminate, the
+  failure is size-dependent and the boundary is known for free.
+- A billing alert on the cloud project is still not configured. At current cost
+  a full sweep of the pinned set is near 8M tokens and the model comparison
+  multiplies that.
