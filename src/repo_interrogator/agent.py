@@ -57,7 +57,33 @@ first probe run -- a budget on visible output would have been wrong by roughly
 four times. ``total_tokens`` also includes the whole message history resent on
 every step, which is the actual billed spend and the thing worth bounding.
 
+Each call's ``total_tokens`` already contains the resent history, so summing
+them counts that history once per call. That is intentional: the sum is billed
+spend, not context size, and billed spend is the thing a ceiling should bound.
+The consequence worth stating out loud is that the ceiling is not a context
+window. A repository needing twenty-five calls can breach a 400k budget while
+every individual call sits far inside the model's window, because the sum grows
+with the square of the step count while the context grows linearly.
+
 Neither budget is a soft target. Both raise.
+
+PROGRESS IS INSTANCE STATE, NOT LOOP LOCALS
+-------------------------------------------
+The counters and the message list live on the agent, not in ``run``'s frame.
+
+A run that breaches a budget is the run most worth reading: it is the one whose
+trajectory explains where the tokens went. Holding the counters as locals means
+that when ``_check_budgets`` raises, every step count, every tool call and the
+entire message list are dropped with the frame -- the run costs full price and
+leaves nothing behind. Budget breaches, escaped exceptions and provider errors
+are all in that category, and there is no cheaper way to learn from them than to
+have kept the trajectory.
+
+This does not weaken the rule that a partial result is never returned as a
+result. ``RunResult`` is still constructed only on the success path, ``run``
+still raises, and ``RunProgress`` is deliberately not a ``RunResult``: it has no
+``questions`` and no ``to_row``, so it cannot be mistaken for one or fed to
+anything that builds a results table.
 
 ASSISTANT MESSAGES ARE APPENDED, NEVER REBUILT
 ----------------------------------------------
@@ -168,7 +194,7 @@ class Question(BaseModel):
         return v
 
 
-# --- run configuration and result ------------------------------------------
+# --- run configuration, progress and result --------------------------------
 
 
 @dataclass(frozen=True)
@@ -190,12 +216,51 @@ class RunLimits:
 
 
 @dataclass
+class RunProgress:
+    """What the run has done and spent so far. Live during the run, kept after it.
+
+    Deliberately not a ``RunResult``. It has no ``questions`` and no ``to_row``,
+    so it cannot be handed to anything that builds a results table, and a
+    breached run cannot be tabulated by accident. Its only consumers are the
+    success path -- which reads the same counters into a ``RunResult`` -- and the
+    failure path, which writes them to a trace.
+
+    ``messages`` is the last full state the graph emitted, not an accumulation
+    this layer maintains. The graph owns the message list; assigning the state's
+    list here keeps whole ``AIMessage`` objects, thought signatures included.
+    """
+
+    steps: int = 0
+    tokens: int = 0
+    tool_calls: int = 0
+    tool_errors: int = 0
+    messages: list[BaseMessage] = field(default_factory=list, repr=False)
+
+    def reset(self) -> None:
+        self.steps = 0
+        self.tokens = 0
+        self.tool_calls = 0
+        self.tool_errors = 0
+        self.messages = []
+
+    def to_dict(self) -> dict[str, int]:
+        """The cost columns. Shared verbatim with ``RunResult.to_row``."""
+        return {
+            "steps": self.steps,
+            "total_tokens": self.tokens,
+            "tool_calls": self.tool_calls,
+            "tool_errors": self.tool_errors,
+        }
+
+
+@dataclass
 class RunResult:
     """What one completed run produced, and what it cost.
 
     Only constructed on success. A run that breached a budget raises instead --
     a partial result recorded as a result is how a truncated run ends up in a
-    table looking like a finished one.
+    table looking like a finished one. The breached run's counters survive on
+    ``RepoAgent.progress``, which is a different type for exactly that reason.
     """
 
     questions: tuple[Question, ...]
@@ -355,6 +420,27 @@ def build_tools(file_tools: FileTools, sink: list[Question]) -> list[Any]:
     return [list_files, get_symbols, read_file, search_code, finish]
 
 
+_TOOL_ERROR_PREFIXES = (
+    "ToolError",
+    "FileNotFoundInRepoError",
+    "NotAFileError",
+    "BinaryFileError",
+    "FileDecodeError",
+    "FileTooLargeError",
+    "LineRangeRequiredError",
+    "InvalidLineRangeError",
+    "SearchFailedError",
+    "SymbolsUnavailableError",
+)
+"""Observation prefixes that mean a tool refused, written by ``_render_tool_error``.
+
+A module constant rather than a literal inside the loop: it is the counterpart
+of the ``ToolError`` branch in ``errors.py``, and a new subclass has to be added
+here too or its failures stop being counted -- silently, which is the one
+outcome this project does not accept.
+"""
+
+
 # --- the loop --------------------------------------------------------------
 
 
@@ -395,6 +481,7 @@ class RepoAgent:
             ) from exc
 
         self._sink: list[Question] = []
+        self._progress = RunProgress()
         self._tools = build_tools(file_tools, self._sink)
 
         llm_kwargs: dict[str, Any] = {"model": model_id, "vertexai": True, "location": location}
@@ -403,6 +490,15 @@ class RepoAgent:
 
         self._llm = ChatGoogleGenerativeAI(**llm_kwargs)
         self._agent = create_agent(model=self._llm, tools=self._tools)
+
+    @property
+    def progress(self) -> RunProgress:
+        """What the run has spent so far, readable after a failure.
+
+        The failure path's only source of counters and trajectory. Read-only by
+        convention: nothing outside ``run`` writes to it.
+        """
+        return self._progress
 
     # --- budget accounting -------------------------------------------------
 
@@ -417,17 +513,18 @@ class RepoAgent:
         usage = msg.usage_metadata or {}
         return int(usage.get("total_tokens") or 0)
 
-    def _check_budgets(self, steps: int, tokens: int) -> None:
+    def _check_budgets(self) -> None:
         """Raise before dispatching the next call, never after it returns."""
-        if steps >= self.limits.max_steps:
+        p = self._progress
+        if p.steps >= self.limits.max_steps:
             raise StepBudgetExceededError(
-                f"{steps} model calls reached the ceiling of {self.limits.max_steps} "
-                f"without finish() being called ({tokens} tokens spent)"
+                f"{p.steps} model calls reached the ceiling of {self.limits.max_steps} "
+                f"without finish() being called ({p.tokens} tokens spent)"
             )
-        if tokens >= self.limits.max_total_tokens:
+        if p.tokens >= self.limits.max_total_tokens:
             raise TokenBudgetExceededError(
-                f"{tokens} tokens reached the ceiling of {self.limits.max_total_tokens} "
-                f"after {steps} model calls, without finish() being called"
+                f"{p.tokens} tokens reached the ceiling of {self.limits.max_total_tokens} "
+                f"after {p.steps} model calls, without finish() being called"
             )
 
     # --- run ---------------------------------------------------------------
@@ -444,6 +541,9 @@ class RepoAgent:
         receiving one state and asking for the next. Because the generator does
         no work until it is advanced, raising here stops the run *before* the
         next model call is dispatched rather than after it has been paid for.
+
+        On every exit path other than a returned ``RunResult``, the counters and
+        the trajectory are left on ``self.progress`` for the caller to record.
         """
         if not task or not task.strip():
             raise AgentConfigurationError(
@@ -452,17 +552,18 @@ class RepoAgent:
             )
 
         self._sink.clear()
+        self._progress.reset()
+        p = self._progress
 
         messages: list[BaseMessage] = [
             SystemMessage(SYSTEM_PROMPT),
             HumanMessage(task),
         ]
 
-        steps = 0
-        tokens = 0
-        tool_calls = 0
-        tool_errors = 0
-        final: list[BaseMessage] = []
+        # The initial turns belong in the trajectory from the outset. A run that
+        # fails on its very first call would otherwise write a trace with no
+        # prompt in it -- and the prompt is the first thing worth reading.
+        p.messages = list(messages)
 
         # recursion_limit is a backstop, not the budget. It stops runaway
         # graph traversal; the checks below are what produce a reportable
@@ -473,13 +574,13 @@ class RepoAgent:
             current: list[BaseMessage] = state.get("messages", [])
             if not current:
                 continue
-            final = current
+            p.messages = current
             latest = current[-1]
 
             if isinstance(latest, AIMessage):
-                steps += 1
-                tokens += self._tokens_of(latest)
-                tool_calls += len(latest.tool_calls or [])
+                p.steps += 1
+                p.tokens += self._tokens_of(latest)
+                p.tool_calls += len(latest.tool_calls or [])
 
             elif isinstance(latest, ToolMessage):
                 # A ToolError was caught in the wrapper and returned as normal
@@ -493,36 +594,34 @@ class RepoAgent:
                         f"by the framework: {latest.content}"
                     )
                 if isinstance(latest.content, str) and latest.content.startswith(
-                    ("ToolError", "FileNotFoundInRepoError", "NotAFileError",
-                     "BinaryFileError", "FileDecodeError", "FileTooLargeError",
-                     "LineRangeRequiredError", "InvalidLineRangeError",
-                     "SearchFailedError", "SymbolsUnavailableError")
+                    _TOOL_ERROR_PREFIXES
                 ):
-                    tool_errors += 1
+                    p.tool_errors += 1
 
             if self._sink:
                 break
 
-            self._check_budgets(steps, tokens)
+            self._check_budgets()
 
         if not self._sink:
             raise NoFinishError(
-                f"the run ended after {steps} model calls and {tokens} tokens without "
+                f"the run ended after {p.steps} model calls and {p.tokens} tokens without "
                 "calling finish(). No questions were produced."
             )
 
         log.info(
             "%s: %d questions, %d steps, %d tokens, %d tool calls (%d errors)",
-            self.file_tools.root.name, len(self._sink), steps, tokens, tool_calls, tool_errors,
+            self.file_tools.root.name, len(self._sink), p.steps, p.tokens, p.tool_calls,
+            p.tool_errors,
         )
 
         return RunResult(
             questions=tuple(self._sink),
-            steps=steps,
-            total_tokens=tokens,
-            tool_calls=tool_calls,
-            tool_errors=tool_errors,
-            messages=tuple(final),
+            steps=p.steps,
+            total_tokens=p.tokens,
+            tool_calls=p.tool_calls,
+            tool_errors=p.tool_errors,
+            messages=tuple(p.messages),
         )
 
 
