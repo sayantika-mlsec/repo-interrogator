@@ -482,12 +482,13 @@ class RepoAgent:
         self.limits = limits or RunLimits()
 
         try:
-            from langchain.agents import create_agent
             from langchain_google_genai import ChatGoogleGenerativeAI
+            from langgraph.graph import END, START, MessagesState, StateGraph
+            from langgraph.prebuilt import ToolNode
         except ImportError as exc:
             raise AgentConfigurationError(
-                "langchain and langchain-google-genai>=4.0 are required: "
-                'uv add langchain "langchain-google-genai>=4.0"'
+                "langgraph and langchain-google-genai>=4.0 are required: "
+                'uv add langgraph "langchain-google-genai>=4.0"'
             ) from exc
 
         self._sink: list[Question] = []
@@ -499,7 +500,47 @@ class RepoAgent:
             llm_kwargs["project"] = project
 
         self._llm = ChatGoogleGenerativeAI(**llm_kwargs)
-        self._agent = create_agent(model=self._llm, tools=self._tools)
+        self._bound_llm = self._llm.bind_tools(self._tools)
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("model", self._call_model)
+        # handle_tool_errors=False. A ToolError is already caught inside its own
+        # wrapper and returned as text, so anything reaching this node uncaught
+        # is a containment breach or a schema failure. The default handler would
+        # convert it into a ToolMessage the model reads and works around, which
+        # turns a breach into a hint.
+        graph.add_node("tools", ToolNode(self._tools, handle_tool_errors=False))
+        graph.add_edge(START, "model")
+        graph.add_conditional_edges("model", self._route, {"tools": "tools", END: END})
+        graph.add_edge("tools", "model")
+        self._agent = graph.compile(name="repo-interrogator")
+
+    # --- graph nodes -------------------------------------------------------
+
+    def _call_model(self, state: dict[str, Any]) -> dict[str, list[BaseMessage]]:
+        """One model call. Returns only the new turn; the reducer appends it.
+
+        The response object is handed back whole. Reconstructing an
+        ``AIMessage`` from its ``tool_calls`` would drop the thought signature
+        this model family requires on the following request.
+        """
+        return {"messages": [self._bound_llm.invoke(state["messages"])]}
+
+    @staticmethod
+    def _route(state: dict[str, Any]) -> str:
+        """Pending tool calls mean another tool turn; anything else ends the graph.
+
+        Termination is not decided here. ``finish`` is an ordinary tool, so the
+        turn that calls it routes to the tool node like any other; the run stops
+        because ``run`` sees the collector filled. Ending the graph on a
+        ``finish`` call instead would put the stopping rule in two places.
+        """
+        from langgraph.graph import END
+
+        last = state["messages"][-1]
+        if isinstance(last, AIMessage) and last.tool_calls:
+            return "tools"
+        return END
 
     @property
     def progress(self) -> RunProgress:
