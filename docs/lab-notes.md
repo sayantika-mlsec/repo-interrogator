@@ -756,3 +756,25 @@ size or of its authorship. Nothing here distinguishes them.
 edited. Three trajectories that do not terminate and one that terminates twice
 at different costs is a good starting point for the failure taxonomy and a bad
 basis for a fix.
+
+### Correction — citation range check
+
+An earlier commit (`9a6a6820eb58e25d1deed2b36b4fe2af8e779d97`) moved the 
+inverted-range check on `Citation` from `model_post_init` to a `model_validator(mode="after")`, 
+labelled as a fix. Thestated reason was that `model_post_init` runs outside Pydantic's 
+validation pass, so a `ValueError` raised there would reach the `finish` tool 
+boundary unwrapped and end the run instead of returning to the model as a correctable
+observation.
+
+That is not how Pydantic v2 behaves. `model_post_init` is called by
+pydantic-core during validation, and a `ValueError` raised inside it is wrapped
+as a `ValidationError`. Verified on 2.13.4.
+
+The commit therefore changed no behaviour. The existing assertion in the agent
+smoke suite — an inverted range expected to raise `ValidationError` — passed
+both before and after, which was already sufficient evidence that no defect
+existed.
+
+The current form is retained: `model_validator(mode="after")` is the documented
+hook for cross-field checks, and `model_post_init` is the post-construction
+setup hook. That is a style preference, not a correction of a fault.
