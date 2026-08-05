@@ -825,3 +825,78 @@ them.
 the calling loop, unchanged. Moving them onto an edge is the point of having a
 graph, but doing it in the same change would have meant a parity failure with
 two possible causes and no way to tell them apart.
+
+### Entry 12 — Citations checked, and where the ranges came from
+
+Two checks were built. Neither calls a model, and both run against completed
+runs already on disk.
+
+**Resolution.** A citation is a repository-relative path and a line range. It
+resolves when the file exists at the commit the run was pinned to and the cited
+range lies inside it. That is the whole test.
+
+Whether the range overlaps a function or class definition is recorded beside the
+verdict and has no bearing on it. Requiring an overlap would fail correct
+citations of documentation, configuration and module-level code, and the
+resulting failure rate would largely measure how much non-Python a run chose to
+cite.
+
+Failure reasons are kept apart rather than summed. A missing file, a range past
+the end of a real file, and a path resolving outside the repository are three
+different findings that call for three different responses.
+
+Runs sharing a commit are grouped and cloned once. Beyond the saving, this
+removes a class of doubt: repeated runs of one repository are compared against
+each other, and if each were checked against its own clone, a difference between
+runs could in principle come from a difference between clones.
+
+**Result: 82 citations across six runs of one development repository, all
+resolved. No failures of any kind, and no variation between runs.**
+
+**Provenance.** A rate that never fails cannot show damage when a tool is
+removed either, so the second check asks a different question: which earlier
+tool call, if any, showed the model the range it cited.
+
+Five outcomes, ordered by how much each reveals — a range read in full, a range
+partly read, a range known only as a definition's location, a range seen only as
+isolated search matches, and a range nothing in the run displayed at all. A
+range covered by two sources is credited to the stronger one, so the weaker
+labels mean "this and nothing better".
+
+Coverage is taken from what the tools returned, not from what was requested. A
+read can be clamped at end of file or cut by a response bound, so the request
+overstates what was actually shown. Where the returned range cannot be recovered
+from the observation, the request is used and the count of such cases is
+reported, so the two are never silently mixed.
+
+**Result: all 82 citations lie inside a range the model had read in full.**
+Nothing was cited from a definition's location alone, from a search match, or
+from nothing at all.
+
+**Reading these two numbers together.** The reading tools only ever return valid
+ranges, so a citation copied from one of them is valid by construction. On this
+repository the resolution rate is therefore close to tautological, and it is
+measuring the tools rather than the model.
+
+That is not a defect. A baseline pinned at the ceiling with no variance is the
+strongest possible starting point for a removal experiment: any drop is real,
+with no run-to-run spread to clear first. It does mean the removal that takes
+line numbers out of the reading tool is the arm carrying the weight, since the
+other two change how the repository is navigated rather than how a range is
+obtained.
+
+It also means provenance is the more sensitive instrument of the two. Under that
+removal the number worth watching is not the resolution rate but the movement of
+citations out of the read category — and a citation that becomes uncovered while
+still resolving would mean a valid range was inferred rather than observed,
+which no pass-or-fail rate can express.
+
+**Consequences for replication.** Grounding showed no variation across six
+identical runs, so it does not require repeated runs to be read reliably. Cost
+does: the same six runs spanned 17 to 27 model calls. The two figures need
+different treatment and were previously going to receive the same.
+
+**Scope, stated plainly.** All of this rests on one repository of seven files
+and twenty symbols. No third-party repository has produced questions at all —
+every attempt has exhausted its model-call budget while still opening new files
+— so nothing here is known to hold at a larger scale.
