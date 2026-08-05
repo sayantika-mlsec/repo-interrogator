@@ -29,6 +29,13 @@ discovered by the verifier three days later. The verifier's job is to check
 whether a citation *resolves*; it should never also be checking whether the
 citation is *well formed*.
 
+Every field and cross-field check runs inside Pydantic's validation pass, so a
+malformed citation raises a ``ValidationError``. That matters because these
+objects are built from model-supplied arguments inside the ``finish`` tool: a
+``ValidationError`` returns to the model as an observation it can correct, while
+a bare exception escapes the tool boundary and ends the run. A swapped pair of
+integers should cost a retry, not a run.
+
 THE TASK STRING IS SENT VERBATIM
 --------------------------------
 ``run`` takes one task string and sends it as the human turn unchanged. Nothing
@@ -121,7 +128,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .errors import (
     AgentConfigurationError,
@@ -165,12 +172,23 @@ class Citation(BaseModel):
             raise ValueError("line numbers are 1-based")
         return v
 
-    def model_post_init(self, _: Any) -> None:
+    @model_validator(mode="after")
+    def _range_is_ordered(self) -> "Citation":
+        """Reject an inverted range from inside the validation pass.
+
+        ``mode="after"`` rather than ``model_post_init``: the post-init hook runs
+        outside validation, so a ``ValueError`` raised there stays a bare
+        ``ValueError``. These objects are constructed from model-supplied
+        arguments inside the ``finish`` tool, where a ``ValidationError`` is
+        handed back as a correctable observation and anything else escapes the
+        tool boundary and kills the run.
+        """
         if self.end_line < self.start_line:
             raise ValueError(
                 f"{self.path}: end_line={self.end_line} precedes "
                 f"start_line={self.start_line}. Ranges are inclusive."
             )
+        return self
 
 
 class Question(BaseModel):
