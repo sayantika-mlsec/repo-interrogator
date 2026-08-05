@@ -778,3 +778,50 @@ existed.
 The current form is retained: `model_validator(mode="after")` is the documented
 hook for cross-field checks, and `model_post_init` is the post-construction
 setup hook. That is a style preference, not a correction of a fault.
+
+### Entry 11 — The agent loop rebuilt as an explicit graph
+
+The loop was constructed by a framework helper that assembles a standard
+tool-calling agent from a model and a list of tools. It worked, but it exposed
+no named places to attach anything to. Per-step logging, budget checks that can
+influence routing, and a retry on rejected citations all need a point in the
+loop to hang from, and a helper that returns a finished object has none.
+
+The loop is now written out: a node that calls the model, a node that runs
+tools, an edge from the model node that goes to tools when tool calls are
+pending and otherwise ends, and an edge back. That is what the helper was doing.
+Writing it out changes nothing about the behaviour and everything about what can
+be added to it later.
+
+Two decisions inside it.
+
+The tool node's error handling is switched off. Its default is to catch whatever
+a tool raises and hand it back to the model as an observation. Every recoverable
+failure in this project is already caught inside its own tool wrapper and
+returned as text, so anything reaching the node uncaught is a containment breach
+or a schema failure. Returning one of those to the model would let it read the
+message and work around the thing that was supposed to stop it.
+
+Termination was left where it already was. The finishing tool is an ordinary
+tool, and the turn that calls it routes to the tool node like any other; the run
+stops because the caller sees the collected questions. Ending the graph on that
+call instead would have been equally correct and would have put the stopping
+rule in two places that can disagree.
+
+**Parity check.** Five runs of the same development repository before the change
+spanned 17 to 27 model calls and 182k to 368k tokens — the noise floor recorded
+in the previous entry. The first run after the change completed at 26 calls and
+381k tokens, inside that range on calls. It is treated as unchanged behaviour on
+that basis.
+
+Per-call cost is worth noting rather than acting on. The five earlier runs cost
+between 10.7k and 13.9k tokens per call; this one cost 14.7k. Calls are the
+figure the parity check rests on and they agree. One run cannot separate a real
+shift from the top of an existing spread, and post-change runs will accumulate
+without any being commissioned for the purpose. Revisit when there are enough of
+them.
+
+**Not done in this change.** The budget checks still sit outside the graph, in
+the calling loop, unchanged. Moving them onto an edge is the point of having a
+graph, but doing it in the same change would have meant a parity failure with
+two possible causes and no way to tell them apart.
