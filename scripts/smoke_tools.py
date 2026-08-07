@@ -13,6 +13,11 @@ taken from a ``Symbol`` and a range read by ``read_file`` must return the same
 text. If those two ever disagree by one, every citation in every run is wrong in
 a way that looks like a model failure.
 
+A second interoperability assertion now sits beside it: the shallow and
+recursive listings, and the search, must agree about which files the repository
+contains. They come from two different traversals, and two traversals that
+disagree would put files in front of the model that other tools cannot reach.
+
 Run:  uv run python scripts/smoke_tools.py
 """
 
@@ -171,29 +176,92 @@ def test_binary_predicate(root: Path) -> None:
     check("latin-1 text is not binary", not is_probably_binary(root / "latin1.txt"))
 
 
-def test_list_files(root: Path, outside: Path) -> None:
-    print("\nlist_files")
+def test_list_files_shallow(root: Path, outside: Path) -> None:
+    """One level by default.
+
+    A recursive listing of a real repository runs to hundreds of entries and is
+    resent on every model call for the rest of the run. It also truncates
+    alphabetically, so whether a source file appears at all depends on how many
+    documentation files sort before it -- a silent failure the model cannot see.
+    """
+    print("\nlist_files (shallow, the default)")
     tools = FileTools(root)
     result = tools.list_files()
+    files = set(result.paths)
+    dirs = set(result.dirs)
+
+    check("shallow by default", not result.recursive)
+    check("posix separators on every platform", all("\\" not in p for p in result.paths))
+    check("files sorted deterministically", list(result.paths) == sorted(result.paths))
+    check("directories sorted deterministically", list(result.dirs) == sorted(result.dirs))
+
+    check("top-level files listed", {"README.md", "logo.png", "ignored.py"} <= files)
+    check("top-level directories listed", {"pkg", ".github"} <= dirs)
+    check("nested files not listed", "pkg/sub/long.py" not in files, str(files))
+    check("nested directories not listed", "pkg/sub" not in dirs, str(dirs))
+
+    check("__pycache__ never listed", "__pycache__" not in dirs)
+    check("build never listed", "build" not in dirs)
+    check("skipped directories are not counted either",
+          result.total_found == len(result.paths) + len(result.dirs))
+    check("nothing outside the root leaks in", outside.name not in files)
+
+    # A trailing slash is the whole signal that an entry can be descended into.
+    check("directories render with a trailing slash", "pkg/" in result.text.splitlines())
+    check("files render without one", "README.md" in result.text.splitlines())
+
+    sub = tools.list_files("pkg")
+    check("descending one level shows the next level",
+          set(sub.paths) == {"pkg/core.py"} and set(sub.dirs) == {"pkg/sub"},
+          f"files={sub.paths} dirs={sub.dirs}")
+    check("listings are repo-relative, not subdir-relative",
+          all(p.startswith("pkg/") for p in sub.paths))
+
+    leaf = tools.list_files("pkg/sub")
+    check("a directory with no subdirectories reports none", leaf.dirs == ())
+    check("its files are all there",
+          set(leaf.paths) == {"pkg/sub/long.py", "pkg/sub/tail.py"}, str(leaf.paths))
+
+
+def test_list_files_recursive(root: Path) -> None:
+    print("\nlist_files (recursive)")
+    tools = FileTools(root)
+    result = tools.list_files(recursive=True)
     paths = set(result.paths)
 
-    check("posix separators on every platform", all("\\" not in p for p in result.paths))
-    check("sorted deterministically", list(result.paths) == sorted(result.paths))
+    check("recursive is recorded on the result", result.recursive)
     check("nested file listed", "pkg/sub/long.py" in paths)
     check("hidden directory listed", ".github/ci.yml" in paths)
     check("gitignored file listed", "ignored.py" in paths)
     check("__pycache__ never listed", "__pycache__/ghost.py" not in paths)
     check("build never listed", "build/artifact.py" not in paths)
-    check("nothing outside the root leaks in", outside.name not in paths)
+    check("a recursive listing reports no directories of its own", result.dirs == ())
 
-    filtered = tools.list_files(pattern="pkg/**/*.py")
+    # Two traversals, one repository. If these disagreed, a shallow listing
+    # would show the model files the recursive walk never reaches, or hide ones
+    # it does.
+    shallow_top = set(tools.list_files().paths)
+    check("shallow listing is a subset of the recursive one",
+          shallow_top <= paths, str(shallow_top - paths))
+
+    filtered = tools.list_files(pattern="pkg/**/*.py", recursive=True)
     check("pattern filters to python under pkg",
           set(filtered.paths) == {"pkg/sub/long.py", "pkg/sub/tail.py"},
           str(filtered.paths))
 
-    sub = tools.list_files("pkg/sub")
-    check("subdir listing is repo-relative, not subdir-relative",
-          set(sub.paths) == {"pkg/sub/long.py", "pkg/sub/tail.py"}, str(sub.paths))
+    # The pattern filters whatever the walk produced; it does not change which
+    # walk happens. One tool with two behaviours depending on which argument
+    # was passed is a rule that gets misremembered.
+    shallow_pattern = tools.list_files(pattern="pkg/**/*.py")
+    check("a pattern does not imply recursion",
+          shallow_pattern.paths == () and not shallow_pattern.recursive,
+          str(shallow_pattern.paths))
+    check("an empty match says so", "no entries matched" in shallow_pattern.text)
+
+
+def test_list_files_guards(root: Path, outside: Path) -> None:
+    print("\nlist_files (guards and caps)")
+    tools = FileTools(root)
 
     check_raises("traversal outside the root refused", PathEscapeError,
                  tools.list_files, "../")
@@ -202,10 +270,17 @@ def test_list_files(root: Path, outside: Path) -> None:
     check_raises("subdir that is a file refused", NotAFileError,
                  tools.list_files, "README.md")
 
-    capped = FileTools(root, ToolConfig(max_list_entries=2)).list_files()
+    capped = FileTools(root, ToolConfig(max_list_entries=2)).list_files(recursive=True)
     check("entry cap truncates", capped.truncated and len(capped.paths) == 2)
-    check("truncation is visible in the text", "more files not shown" in capped.text)
+    check("truncation is visible in the text", "more not shown" in capped.text)
     check("total is reported even when truncated", capped.total_found > 2)
+
+    # The cap counts entries of both kinds. A cap that only counted files would
+    # let a directory-heavy listing through at any width.
+    capped_shallow = FileTools(root, ToolConfig(max_list_entries=2)).list_files()
+    check("the cap counts directories too",
+          len(capped_shallow.paths) + len(capped_shallow.dirs) == 2,
+          f"files={capped_shallow.paths} dirs={capped_shallow.dirs}")
 
 
 def test_read_file(root: Path, outside: Path) -> None:
@@ -320,6 +395,13 @@ def test_ablations(root: Path) -> None:
           == ToolConfig(number_lines=False).max_response_chars
           == ToolConfig(require_line_range=False).max_response_chars)
 
+    # Listing breadth is not an ablation knob. The declared ablations were
+    # written before any tool code existed and that file is frozen; a third
+    # knob appearing on the config would blur what "the design under test"
+    # names. The recursion flag is an ordinary tool argument.
+    check("listing breadth is not a config knob",
+          "recursive" not in ToolConfig().to_dict())
+
 
 def test_search_code(root: Path, outside: Path) -> None:
     print("\nsearch_code")
@@ -331,7 +413,7 @@ def test_search_code(root: Path, outside: Path) -> None:
     check("__pycache__ excluded from search", "__pycache__/ghost.py" not in hit_paths)
     check("build excluded from search", "build/artifact.py" not in hit_paths)
     check("search and list agree on the file set",
-          hit_paths <= set(tools.list_files().paths), str(hit_paths))
+          hit_paths <= set(tools.list_files(recursive=True).paths), str(hit_paths))
 
     check("hidden directories are searched",
           any(m.path == ".github/ci.yml" for m in tools.search_code("needle_hidden_dir").matches))
@@ -381,7 +463,9 @@ def main() -> int:
         build_fixture(root)
         test_construction(root, outside)
         test_binary_predicate(root)
-        test_list_files(root, outside)
+        test_list_files_shallow(root, outside)
+        test_list_files_recursive(root)
+        test_list_files_guards(root, outside)
         test_read_file(root, outside)
         test_symbol_interop(root)
         test_ablations(root)

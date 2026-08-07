@@ -98,6 +98,34 @@ def iter_files(root: Path) -> Iterator[Path]:
                 yield p
 
 
+def iter_entries(base: Path) -> Iterator[tuple[Path, bool]]:
+    """Yield the immediate children of one directory, with a directory flag.
+
+    The shallow counterpart to ``iter_files``, and it has to agree with it on
+    what a repository contains: same skip set, same refusal to follow symlinks.
+    A listing that showed a directory ``iter_files`` never walks would send the
+    model somewhere the other tools cannot go.
+
+    Sorted here rather than by the caller. The order a filesystem returns
+    entries in is not stable across platforms, and an unstable listing means two
+    runs of the same pinned commit are shown different first files.
+    """
+    try:
+        entries = sorted(base.iterdir())
+    except OSError:
+        return
+
+    for path in entries:
+        if path.is_symlink():
+            continue
+        try:
+            is_dir = path.is_dir()
+        except OSError:
+            continue
+        if is_dir and path.name in SKIP_DIRS:
+            continue
+        yield path, is_dir
+
 # --- readability -----------------------------------------------------------
 
 SNIFF_BYTES = 8192

@@ -82,7 +82,7 @@ from .errors import (
     SymbolsUnavailableError,
     ToolConfigurationError,
 )
-from .fsutil import SKIP_DIRS, is_probably_binary, iter_files, resolve_within
+from .fsutil import SKIP_DIRS, is_probably_binary, iter_files, resolve_within, iter_entries
 
 if TYPE_CHECKING:
     # Type-checking only. A runtime import would pull in the symbol layer, which
@@ -133,8 +133,12 @@ class ToolConfig:
 @dataclass(frozen=True)
 class ListResult:
     paths: tuple[str, ...]
+    dirs: tuple[str, ...]
+    """Immediate subdirectories, when the listing is shallow. Empty when recursive."""
+
     total_found: int
     truncated: bool
+    recursive: bool
     text: str
 
 
@@ -256,54 +260,97 @@ class FileTools:
         subdir: str | None = None,
         *,
         pattern: str | None = None,
+        recursive: bool = False,
     ) -> ListResult:
-        """List repository files, optionally under ``subdir`` or matching ``pattern``.
+        """List one directory level, or the whole tree under ``recursive``.
 
-        Walks via ``iter_files`` -- the same traversal the symbol indexer uses.
-        A second, independent walk would eventually disagree about which files
-        the repository contains, and that disagreement would confound the
-        ablation that removes the symbol index.
+        Shallow by default, like ``ls``. A recursive listing of a real
+        repository runs to hundreds of entries, most of them documentation and
+        images, and it is resent on every subsequent model call for the rest of
+        the run. Worse, it truncates: the cap is spent alphabetically, so
+        whether a source file appears at all depends on how many documentation
+        files sort before it. That is a silent failure, and the model orienting
+        from a listing has no way to see it.
 
-        ``pattern`` is matched against the repository-relative path with
-        ``fnmatch``, whose ``*`` crosses directory separators. ``*.py`` therefore
-        matches ``pkg/sub/mod.py``, which is not what a shell would do. This is
-        the more forgiving reading of a pattern a model guessed at, and the
-        looser behaviour fails toward showing too much rather than silently
-        showing nothing.
+        Directories are returned separately and rendered with a trailing
+        slash, so a shallow listing says where to go next rather than only what
+        is here.
+
+        ``pattern`` filters whatever the walk produced and does not change which
+        walk happens. Making it imply recursion would mean one tool with two
+        behaviours depending on which argument was passed, which is the kind of
+        rule that gets misremembered.
+
+        Both walks skip the same directories and neither follows symlinks --
+        the same file set ``search_code`` and the symbol indexer see. Two
+        traversals disagreeing about a repository is the failure the symbol
+        layer already refused to allow.
+
+        ``fnmatch``'s ``*`` crosses directory separators, so ``*.py`` under
+        ``recursive`` matches ``pkg/sub/mod.py``. That is the more forgiving
+        reading of a pattern a model guessed at, and it fails toward showing too
+        much rather than silently showing nothing.
         """
         cfg = self.config
         base = self._resolve_dir(subdir) if subdir else self.root
 
-        rels: list[str] = []
-        for abs_path in iter_files(base):
-            rel = self._rel(abs_path)
-            if pattern and not fnmatch.fnmatch(rel, pattern):
-                continue
-            rels.append(rel)
+        found_dirs: list[str] = []
+        found_files: list[str] = []
 
-        rels.sort()
-        total = len(rels)
+        if recursive:
+            for abs_path in iter_files(base):
+                rel = self._rel(abs_path)
+                if pattern and not fnmatch.fnmatch(rel, pattern):
+                    continue
+                found_files.append(rel)
+        else:
+            for abs_path, is_dir in iter_entries(base):
+                rel = self._rel(abs_path)
+                if pattern and not fnmatch.fnmatch(rel, pattern):
+                    continue
+                (found_dirs if is_dir else found_files).append(rel)
 
-        kept: list[str] = []
+        found_dirs.sort()
+        found_files.sort()
+        total = len(found_dirs) + len(found_files)
+
+        # Directories first: a shallow listing is read to decide where to look
+        # next, and the entries that can be descended into are the answer.
+        entries: list[tuple[str, bool]] = [(d, True) for d in found_dirs]
+        entries += [(f, False) for f in found_files]
+
+        kept_dirs: list[str] = []
+        kept_files: list[str] = []
+        rendered: list[str] = []
         used = 0
         truncated = False
-        for rel in rels:
-            if len(kept) >= cfg.max_list_entries or used + len(rel) + 1 > cfg.max_response_chars:
+
+        for rel, is_dir in entries:
+            shown = f"{rel}/" if is_dir else rel
+            if (
+                len(rendered) >= cfg.max_list_entries
+                or used + len(shown) + 1 > cfg.max_response_chars
+            ):
                 truncated = True
                 break
-            kept.append(rel)
-            used += len(rel) + 1
+            (kept_dirs if is_dir else kept_files).append(rel)
+            rendered.append(shown)
+            used += len(shown) + 1
 
-        body = "\n".join(kept)
+        body = "\n".join(rendered)
         if truncated:
-            body += f"\n… {total - len(kept)} more files not shown ({total} total)"
-        elif not kept:
-            body = "(no files matched)"
+            body += f"\n… {total - len(rendered)} more not shown ({total} total)"
+        elif not rendered:
+            body = "(nothing here)" if not pattern else "(no entries matched)"
 
         return ListResult(
-            paths=tuple(kept), total_found=total, truncated=truncated, text=body
+            paths=tuple(kept_files),
+            dirs=tuple(kept_dirs),
+            total_found=total,
+            truncated=truncated,
+            recursive=recursive,
+            text=body,
         )
-
     # --- read_file ---------------------------------------------------------
 
     def read_file(
