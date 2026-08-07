@@ -900,3 +900,92 @@ different treatment and were previously going to receive the same.
 and twenty symbols. No third-party repository has produced questions at all —
 every attempt has exhausted its model-call budget while still opening new files
 — so nothing here is known to hold at a larger scale.
+
+## Entry 13 — The stopping condition is not a prompt problem
+
+### What prompted this
+
+The agent had never called the finishing tool on any third-party repository.
+Every run reached the call ceiling instead, and every one was still opening new
+files on its final call — none was cut off mid-conclusion. The instruction it
+had said to finish "when you are done" and never said what done meant.
+
+### What was tested
+
+Two changes, run separately so each could be attributed.
+
+**First:** the task string alone. "Done" was redefined as a count — hold the
+requested number of questions, each with a citation, then stop reading and
+return them in one call. Everything else unchanged.
+
+**Second:** the same rule stated in the system instruction and in the finishing
+tool's own description, which had independently framed stopping as a judgement
+about having "enough evidence." After this change all three places agreed.
+
+The call ceiling was not raised for either. Raising a ceiling because a run
+reached it is how a budget stops being a measurement.
+
+### Result
+
+Both runs reached the ceiling without finishing. Same repository, same pinned
+commit.
+
+The two trajectories had almost nothing in common. The first entered through the
+data-structure modules and worked toward retry and templating logic; the second
+entered through the client, moved through patching and response-model code, and
+reached the data structures last. Different entry points, different files,
+opposite order. Both were still searching on the final call — one opening a new
+file, the other listing for files it had not yet seen.
+
+Two unrelated paths ending the same way is stronger evidence than two identical
+runs would have been. The behaviour is not an artifact of one unlucky route
+through the repository.
+
+### What this establishes
+
+The agent has no accumulation behaviour. Nothing in a trajectory suggests it was
+tracking a set of questions at any point, and there was no partial output at any
+step. Investigation never ends because producing an answer is never cheaper than
+continuing to read: writing questions costs a turn that can always be spent
+reading instead.
+
+Three statements of the rule, at every level available, did not change this. The
+instruction is not the lever.
+
+### Consequences recorded
+
+**The call ceiling stays where it is.** A run showing no convergence pressure at
+the ceiling shows none at twice the ceiling; the same trajectory would cost
+double. This is now an evidence-based decision rather than an untested default.
+
+**The first scored read of the held-out set cannot proceed.** Every held-out
+repository is third party, and third-party repositories do not terminate. That
+read happens exactly twice and the first cannot be retaken; spending it on a set
+that produces nothing is worse than not spending it.
+
+**Trajectory content varies as much as trajectory length.** Cost variance across
+repeated runs was already measured. This is a second kind of variance — which
+files are visited and in what order — and it is wide. Any claim about what the
+agent examines needs the same replication that cost claims do.
+
+### An earlier open question, closed
+
+One record noted the symbol tool returning 29 characters for a file named
+`client.py` against 16,083 for its second-generation counterpart, and flagged it
+for a manual check. Both files appear in the second run here. The small figure
+is correct: that module holds almost nothing. The large one is a single
+observation resent on 26 subsequent calls and accounts for most of the cost
+difference between the two runs.
+
+### What comes next
+
+Two candidates, in order.
+
+First, make the running total visible to the model. It cannot see its own
+progress: every observation describes the repository and none describes what it
+has produced. This preserves the behaviour under study.
+
+Second, if that fails, remove the choice — a point at which finishing is the
+only action available. This terminates by construction, but questions produced
+because no alternative remained are a different artifact from questions produced
+when the model judged itself ready. That cost is why it is second.
