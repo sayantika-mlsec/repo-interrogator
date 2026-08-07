@@ -1,4 +1,4 @@
-"""The agent loop: five tools, a validated output schema, and two hard budgets.
+"""The agent loop: six tools, a validated output schema, and two hard budgets.
 
 WHAT THIS LAYER OWNS
 --------------------
@@ -8,18 +8,40 @@ is the first one containing a model, so it is the first one where "it kept
 going" is a possible failure rather than an impossible one. Its job is to make
 that failure impossible too.
 
-FIVE TOOLS, AND WHY ``finish`` IS ONE OF THEM
----------------------------------------------
-``finish`` could have been a special case in the loop -- watch for a final text
-turn, parse questions out of it. It is a tool instead, and it carries the
-questions as its argument.
+WHY WRITING IS ITS OWN TOOL
+---------------------------
+Questions were originally produced in one place: the argument to ``finish``.
+That made writing a terminal act. Reading was available on every turn; writing
+was available only on the last one, and nothing ever made it the better move.
+The result was an agent that read until it hit the ceiling and never produced
+anything at all -- on three unrelated trajectories through the same repository,
+under three different attempts to state the stopping rule in words.
 
-Two consequences follow, and both matter later. Termination becomes a row in the
-same trace table as every other call, so "how did this run end" is answered by
-the same query as "what did this run do". And output cannot be separated from
-termination: there is no run that stopped without producing questions, and no
-run that produced questions without stopping. A final-text-turn design allows
-both, and both are silent.
+None of those attempts could have worked. The instruction was not unclear; the
+action it asked for did not exist as a normal option.
+
+So ``record_questions`` exists. Questions are written during the run, in
+batches, as many times as the model likes. ``finish`` then takes no arguments
+and only ends the run. Producing becomes an ordinary move with a visible effect,
+and the stopping condition becomes something the model can reach by doing its
+work rather than by deciding to abandon it.
+
+TERMINATION AND OUTPUT ARE STILL COUPLED
+----------------------------------------
+The old design made this structural: there was no run that stopped without
+producing questions, because stopping *was* producing. Splitting them gives that
+up, so it is re-enforced explicitly.
+
+``run`` treats two things as failures, and neither returns a ``RunResult``: a
+run that never called ``finish``, and a run that called it holding nothing. The
+guarantee is unchanged from the outside. It is now a check rather than a
+consequence, which is worth stating plainly because a check can be deleted and a
+consequence cannot.
+
+Termination is detected by the finishing tool's observation arriving in the
+stream -- one ``ToolMessage`` with a known name. It stays a single place in
+``run``, as before. The collector can no longer serve that role: it fills during
+the run now, which is the entire point.
 
 THE SCHEMA IS THE CONTRACT
 --------------------------
@@ -28,6 +50,25 @@ or carries a range that is inverted, is rejected at the boundary rather than
 discovered by the verifier three days later. The verifier's job is to check
 whether a citation *resolves*; it should never also be checking whether the
 citation is *well formed*.
+
+Validation now happens as each batch is recorded rather than once at the end. A
+malformed question is rejected while the model still has turns left to fix it,
+instead of failing the whole run on its last call.
+
+THE MODEL CAN SEE WHAT IT HAS WRITTEN
+-------------------------------------
+Every tool observation carries the running count against the target. Every
+observation otherwise describes the repository and none describes the run's own
+output, so without this the model is asked to stop at a number it cannot check.
+
+The count is appended by the wrapper, not produced by ``FileTools``. The file
+layer is bound to a repository and knows nothing about a run; giving it run
+state would put a counter inside the structured results the verifier and
+provenance layers read.
+
+The error path carries the count too. A counter that appears on successful
+observations and vanishes on failed ones is intermittent, which is worse to
+reason from than no counter at all.
 
 THE TASK STRING IS SENT VERBATIM
 --------------------------------
@@ -43,6 +84,13 @@ variant is visible in the message list rather than implied by a call signature.
 
 ``default_task()`` supplies the standard wording. Callers may substitute their
 own.
+
+The target count now appears in two places -- the task string and the recording
+tool's replies -- so ``run`` refuses a task that does not mention the number the
+agent was constructed with. The check is a substring test and cannot be more
+than that without parsing an authored string, which is exactly what this layer
+refuses to do. It catches the failure worth catching: a caller that changes one
+and forgets the other, leaving the model told two different numbers.
 
 BUDGETS ARE ENFORCED BEFORE THE SPEND, NOT AFTER
 ------------------------------------------------
@@ -84,6 +132,11 @@ result. ``RunResult`` is still constructed only on the success path, ``run``
 still raises, and ``RunProgress`` is deliberately not a ``RunResult``: it has no
 ``questions`` and no ``to_row``, so it cannot be mistaken for one or fed to
 anything that builds a results table.
+
+A breached run now leaves recorded questions behind on the collector, where
+previously it left none. They are not a result and are not returned as one.
+They are evidence about how far the run got, which is the same reason the
+counters survive.
 
 ASSISTANT MESSAGES ARE APPENDED, NEVER REBUILT
 ----------------------------------------------
@@ -134,6 +187,24 @@ from .symbols import SymbolIndex
 from .tools import FileTools, ToolConfig
 
 log = logging.getLogger(__name__)
+
+
+DEFAULT_N_QUESTIONS = 10
+"""The target question count, when a caller does not state one.
+
+A module constant because it is the default in three places -- the task string,
+the recording tool's replies, and the agent's own guard -- and three
+independently written defaults are three chances for them to drift apart.
+"""
+
+FINISH_TOOL_NAME = "finish"
+"""The name ``run`` watches for in the stream to detect termination.
+
+A constant rather than a literal at the comparison site: the tool's name is
+derived from its function name by the decorator, so a rename would otherwise
+break termination silently and only on repositories where the model ever
+finishes.
+"""
 
 
 # --- output schema ---------------------------------------------------------
@@ -208,10 +279,10 @@ class RunLimits:
     trajectories once real runs exist.
     """
 
-    max_steps: int = 30
+    max_steps: int = 75
     """Model calls, not tool calls. A step that returns a tool error still counts."""
 
-    max_total_tokens: int = 800_000
+    max_total_tokens: int = 25_00000
     """Cumulative billed tokens across the run, including thinking and resent history.
 
     Set from a measured trajectory, not chosen. Input grows ~1.2k tokens per
@@ -244,6 +315,14 @@ class RunProgress:
     tokens: int = 0
     tool_calls: int = 0
     tool_errors: int = 0
+    questions_recorded: int = 0
+    """How many questions the run wrote before it ended, successfully or not.
+
+    On a breached run this separates "read for thirty calls and produced
+    nothing" from "produced seven and ran out of room". Those are different
+    failures and the step count alone does not tell them apart.
+    """
+
     messages: list[BaseMessage] = field(default_factory=list, repr=False)
 
     def reset(self) -> None:
@@ -251,6 +330,7 @@ class RunProgress:
         self.tokens = 0
         self.tool_calls = 0
         self.tool_errors = 0
+        self.questions_recorded = 0
         self.messages = []
 
     def to_dict(self) -> dict[str, int]:
@@ -260,6 +340,7 @@ class RunProgress:
             "total_tokens": self.tokens,
             "tool_calls": self.tool_calls,
             "tool_errors": self.tool_errors,
+            "questions_recorded": self.questions_recorded,
         }
 
 
@@ -298,24 +379,30 @@ SYSTEM_PROMPT = """\
 You are examining a repository you have never seen. Your task is to produce \
 questions about how it actually works, each grounded in specific code.
 
-You have five tools. Use them to navigate; do not guess at contents.
+You have six tools. Use them to navigate; do not guess at contents.
 
 - list_files: see what exists
 - get_symbols: definitions in one file, with line ranges
 - read_file: read a line range
 - search_code: find text across the repository
-- finish: return your questions and stop
+- record_questions: write down questions you have arrived at
+- finish: end the run
 
-Work from structure to detail: find the files that matter, list their \
-definitions, then read the ranges that look load-bearing. Prefer questions whose \
-answer is visible in code you have actually read over questions any repository \
-of this kind would produce.
+Call get_symbols on a file before reading it. The symbol map gives you the \
+ranges worth reading, and reading a file front to back in chunks costs the same \
+calls for less. Then read the ranges that look load-bearing. Prefer questions \
+whose answer is visible in code you have actually read over questions any \
+repository of this kind would produce.
 
-Every citation must point at a range you read. Collect questions as you go \
-rather than at the end. Once you hold the number of questions you were asked \
-for, stop reading and call finish with all of them."""
+Record questions as you go, in small batches, as soon as you have read enough \
+to ground one. Do not save them all for the end. Every tool reply tells you how \
+many you are holding. Once you hold the number you were asked for, stop reading \
+and call finish.
 
-def default_task(n_questions: int = 10) -> str:
+Every citation must point at a range you read."""
+
+
+def default_task(n_questions: int = DEFAULT_N_QUESTIONS) -> str:
     """The standard task string. Callers may substitute their own.
 
     A function rather than a constant carrying a format placeholder: a caller
@@ -325,11 +412,13 @@ def default_task(n_questions: int = 10) -> str:
     """
     return (
         f"Produce {n_questions} questions about this repository. "
-        f"Keep a running list as you investigate. "
-        f"You are done when that list holds {n_questions} questions, each with "
+        f"One file you have read is enough to ground a question. "
+        f"After each file you read properly, record what it raises before "
+        f"moving to the next one, rather than waiting until you understand the "
+        f"whole system. "
+        f"You are done when you are holding {n_questions} questions, each with "
         f"at least one citation to a range you have read. "
-        f"At that point stop opening files and call finish with all "
-        f"{n_questions} questions in one call."
+        f"At that point stop reading and call finish."
     )
 
 def _render_tool_error(exc: ToolError) -> str:
@@ -342,33 +431,65 @@ def _render_tool_error(exc: ToolError) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def build_tools(file_tools: FileTools, sink: list[Question]) -> list[Any]:
-    """Wrap the file tools for the model, plus ``finish``.
+def build_tools(
+    file_tools: FileTools,
+    sink: list[Question],
+    *,
+    n_questions: int = DEFAULT_N_QUESTIONS,
+) -> list[Any]:
+    """Wrap the file tools for the model, plus ``record_questions`` and ``finish``.
 
-    ``sink`` receives the validated questions when ``finish`` is called. A
-    mutable collector rather than a parsed return value: the questions must
-    survive whatever the framework does with the tool's own return string, and
-    they must be identical to the objects Pydantic validated rather than a
-    re-parse of their rendering.
+    ``sink`` accumulates validated questions as the run proceeds. A mutable
+    collector rather than a parsed return value: the questions must survive
+    whatever the framework does with a tool's return string, and they must be
+    identical to the objects Pydantic validated rather than a re-parse of their
+    rendering.
+
+    ``n_questions`` is keyword-only with a default so that existing positional
+    callers keep working. It is used only for what the model is told; nothing
+    here enforces it. A cap would turn a target into a wall, and the question of
+    interest is whether the model stops on its own.
 
     Every wrapper catches ``ToolError`` and returns the message as text.
     Anything else propagates -- see the module docstring.
     """
 
+    def _held() -> str:
+        return f"[holding {len(sink)} of {n_questions} questions]"
+
+    def _with_progress(text: str) -> str:
+        """Append what the model cannot otherwise see: its own output so far.
+
+        Appended in the wrapper rather than produced by ``FileTools``. The file
+        layer is bound to a repository and knows nothing about a run; giving it
+        run state would put a counter inside the structured results the verifier
+        and provenance layers read.
+        """
+        return f"{text}\n\n{_held()}"
     @tool
-    def list_files(subdir: str | None = None, pattern: str | None = None) -> str:
-        """List files in the repository.
+    def list_files(
+        subdir: str | None = None,
+        pattern: str | None = None,
+        recursive: bool = False,
+    ) -> str:
+        """List one directory level of the repository.
+
+        Directories are shown with a trailing slash. Pass a directory as subdir
+        to look inside it.
 
         Args:
-            subdir: Optional directory to list under, repository-relative.
+            subdir: Optional directory to list, repository-relative.
             pattern: Optional glob, matched against the full relative path.
-                Note that * crosses directory separators, so "*.py" matches
-                nested files.
+            recursive: List every file underneath instead of one level. On a
+                large repository this returns hundreds of entries and may be
+                truncated.
         """
         try:
-            return file_tools.list_files(subdir, pattern=pattern).text
+            return _with_progress(
+                file_tools.list_files(subdir, pattern=pattern, recursive=recursive).text
+            )
         except ToolError as exc:
-            return _render_tool_error(exc)
+            return _with_progress(_render_tool_error(exc))
 
     @tool
     def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
@@ -380,9 +501,9 @@ def build_tools(file_tools: FileTools, sink: list[Question]) -> list[Any]:
             end_line: Last line, 1-based inclusive.
         """
         try:
-            return file_tools.read_file(path, start_line, end_line).text
+            return _with_progress(file_tools.read_file(path, start_line, end_line).text)
         except ToolError as exc:
-            return _render_tool_error(exc)
+            return _with_progress(_render_tool_error(exc))
 
     @tool
     def search_code(
@@ -400,11 +521,13 @@ def build_tools(file_tools: FileTools, sink: list[Question]) -> list[Any]:
             fixed_strings: Treat pattern as a literal string, not a regex.
         """
         try:
-            return file_tools.search_code(
-                pattern, path=path, ignore_case=ignore_case, fixed_strings=fixed_strings
-            ).text
+            return _with_progress(
+                file_tools.search_code(
+                    pattern, path=path, ignore_case=ignore_case, fixed_strings=fixed_strings
+                ).text
+            )
         except ToolError as exc:
-            return _render_tool_error(exc)
+            return _with_progress(_render_tool_error(exc))
 
     @tool
     def get_symbols(path: str) -> str:
@@ -414,25 +537,35 @@ def build_tools(file_tools: FileTools, sink: list[Question]) -> list[Any]:
             path: Repository-relative path to a .py file.
         """
         try:
-            return file_tools.get_symbols(path).text
+            return _with_progress(file_tools.get_symbols(path).text)
         except ToolError as exc:
-            return _render_tool_error(exc)
+            return _with_progress(_render_tool_error(exc))
 
     @tool
-    def finish(questions: list[Question]) -> str:
-        """Return the finished questions and end the run.
+    def record_questions(questions: list[Question]) -> str:
+        """Write down one or more questions you have arrived at. Call as often as you like.
 
-        Call this exactly once, as soon as you hold the number of questions you
-        were asked for. Do not keep reading past that point.
+        Recorded questions are kept. Call this whenever you have read enough to
+        ground a question, rather than saving them all for the end.
 
         Args:
-            questions: The questions, each with at least one citation pointing
-                at a line range you actually read.
+            questions: One or more questions, each with at least one citation
+                pointing at a line range you actually read.
         """
         sink.extend(questions)
-        return f"Recorded {len(questions)} questions. Run complete."
+        return f"Recorded {len(questions)}. {_held()}"
 
-    return [list_files, get_symbols, read_file, search_code, finish]
+    @tool
+    def finish() -> str:
+        """End the run. Call this once you are holding the number of questions you were asked for.
+
+        Takes no arguments: it returns the questions already recorded with
+        record_questions. Anything not recorded by the time this is called is
+        not part of the result.
+        """
+        return f"Run complete. {_held()}"
+
+    return [list_files, get_symbols, read_file, search_code, record_questions, finish]
 
 
 _TOOL_ERROR_PREFIXES = (
@@ -453,6 +586,9 @@ A module constant rather than a literal inside the loop: it is the counterpart
 of the ``ToolError`` branch in ``errors.py``, and a new subclass has to be added
 here too or its failures stop being counted -- silently, which is the one
 outcome this project does not accept.
+
+The progress line is appended after this prefix, never before it, so a prefix
+match still identifies a refusal.
 """
 
 
@@ -473,6 +609,7 @@ class RepoAgent:
         model_id: str,
         *,
         limits: RunLimits | None = None,
+        n_questions: int = DEFAULT_N_QUESTIONS,
         location: str = "global",
         project: str | None = None,
     ) -> None:
@@ -481,10 +618,15 @@ class RepoAgent:
                 "model_id is required and has no default. A results row that does "
                 "not state its model is not reproducible."
             )
+        if n_questions < 1:
+            raise AgentConfigurationError(
+                f"n_questions={n_questions}. A run with no target has no stopping condition."
+            )
 
         self.file_tools = file_tools
         self.model_id = model_id
         self.limits = limits or RunLimits()
+        self.n_questions = n_questions
 
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
@@ -498,7 +640,7 @@ class RepoAgent:
 
         self._sink: list[Question] = []
         self._progress = RunProgress()
-        self._tools = build_tools(file_tools, self._sink)
+        self._tools = build_tools(file_tools, self._sink, n_questions=n_questions)
 
         llm_kwargs: dict[str, Any] = {"model": model_id, "vertexai": True, "location": location}
         if project:
@@ -537,7 +679,7 @@ class RepoAgent:
 
         Termination is not decided here. ``finish`` is an ordinary tool, so the
         turn that calls it routes to the tool node like any other; the run stops
-        because ``run`` sees the collector filled. Ending the graph on a
+        because ``run`` sees its observation come back. Ending the graph on a
         ``finish`` call instead would put the stopping rule in two places.
         """
         from langgraph.graph import END
@@ -555,6 +697,16 @@ class RepoAgent:
         convention: nothing outside ``run`` writes to it.
         """
         return self._progress
+
+    @property
+    def recorded(self) -> tuple[Question, ...]:
+        """Questions written so far, readable after a failure.
+
+        Not a result and never returned as one. A breached run that produced
+        seven questions and a breached run that produced none are different
+        findings, and the difference is only legible here.
+        """
+        return tuple(self._sink)
 
     # --- budget accounting -------------------------------------------------
 
@@ -575,12 +727,14 @@ class RepoAgent:
         if p.steps >= self.limits.max_steps:
             raise StepBudgetExceededError(
                 f"{p.steps} model calls reached the ceiling of {self.limits.max_steps} "
-                f"without finish() being called ({p.tokens} tokens spent)"
+                f"without finish() being called ({p.tokens} tokens spent, "
+                f"{p.questions_recorded} questions recorded)"
             )
         if p.tokens >= self.limits.max_total_tokens:
             raise TokenBudgetExceededError(
                 f"{p.tokens} tokens reached the ceiling of {self.limits.max_total_tokens} "
-                f"after {p.steps} model calls, without finish() being called"
+                f"after {p.steps} model calls, without finish() being called "
+                f"({p.questions_recorded} questions recorded)"
             )
 
     # --- run ---------------------------------------------------------------
@@ -598,8 +752,9 @@ class RepoAgent:
         no work until it is advanced, raising here stops the run *before* the
         next model call is dispatched rather than after it has been paid for.
 
-        On every exit path other than a returned ``RunResult``, the counters and
-        the trajectory are left on ``self.progress`` for the caller to record.
+        On every exit path other than a returned ``RunResult``, the counters, the
+        trajectory and any recorded questions are left on the instance for the
+        caller to record.
         """
         if not task or not task.strip():
             raise AgentConfigurationError(
@@ -607,9 +762,21 @@ class RepoAgent:
                 "a run whose prompt is not recoverable from its own trace."
             )
 
+        # The target reaches the model twice: in this string, and in every reply
+        # from the recording tool. A caller that changes one and not the other
+        # leaves the model told two different numbers, and the run still
+        # completes -- producing a real row against a prompt nobody intended.
+        if str(self.n_questions) not in task:
+            raise AgentConfigurationError(
+                f"the task string does not mention {self.n_questions}, which is the "
+                f"target this agent tells the model on every tool reply. Pass "
+                f"default_task({self.n_questions}) or state the same number in your own."
+            )
+
         self._sink.clear()
         self._progress.reset()
         p = self._progress
+        finished = False
 
         messages: list[BaseMessage] = [
             SystemMessage(SYSTEM_PROMPT),
@@ -653,16 +820,30 @@ class RepoAgent:
                     _TOOL_ERROR_PREFIXES
                 ):
                     p.tool_errors += 1
+                if latest.name == FINISH_TOOL_NAME:
+                    finished = True
 
-            if self._sink:
+            p.questions_recorded = len(self._sink)
+
+            if finished:
                 break
 
             self._check_budgets()
 
-        if not self._sink:
+        # Two failures, kept apart. A run that never called the finishing tool
+        # ran out of room; a run that called it holding nothing misunderstood
+        # the task. Both are failures and neither returns a result, but they
+        # point at different fixes and the messages say which is which.
+        if not finished:
             raise NoFinishError(
                 f"the run ended after {p.steps} model calls and {p.tokens} tokens without "
-                "calling finish(). No questions were produced."
+                f"calling finish(). {p.questions_recorded} questions were recorded."
+            )
+        if not self._sink:
+            raise NoFinishError(
+                f"finish() was called after {p.steps} model calls without any question "
+                "having been recorded. Questions are written with record_questions; "
+                "finish() only ends the run."
             )
 
         log.info(
@@ -688,6 +869,7 @@ def build_agent(
     symbol_index: SymbolIndex | None = None,
     tool_config: ToolConfig | None = None,
     limits: RunLimits | None = None,
+    n_questions: int = DEFAULT_N_QUESTIONS,
     location: str = "global",
     project: str | None = None,
 ) -> RepoAgent:
@@ -699,4 +881,11 @@ def build_agent(
     anything.
     """
     tools = FileTools(root, tool_config, symbol_index=symbol_index)
-    return RepoAgent(tools, model_id, limits=limits, location=location, project=project)
+    return RepoAgent(
+        tools,
+        model_id,
+        limits=limits,
+        n_questions=n_questions,
+        location=location,
+        project=project,
+    )

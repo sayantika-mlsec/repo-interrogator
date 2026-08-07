@@ -8,6 +8,12 @@ This file parses arguments and delegates. Every decision it looks like it makes
 by a sweep, cannot be imported by a test, and changes whenever someone edits the
 script to get a different run out of it.
 
+``--questions`` sets the target in two places at once: the standard task string,
+and the count the agent reports on every tool reply. ``--task`` replaces the
+wording only. A custom task that names a different number is refused before any
+spend, because a model told two different targets will still produce a run, and
+that run will look like every other row in the table.
+
 Writing the trajectory is the runner's job, not this file's. A failed run has a
 trajectory worth keeping, and a script that wrote the trace after a successful
 call could only ever keep the successful ones. This file passes a directory and
@@ -28,7 +34,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from repo_interrogator.agent import RunLimits, default_task
+from repo_interrogator.agent import DEFAULT_N_QUESTIONS, RunLimits, default_task
 from repo_interrogator.cloner import git_available
 from repo_interrogator.errors import RepoInterrogatorError
 from repo_interrogator.repos import load_repos
@@ -53,11 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
         "state its model is not reproducible.",
     )
     p.add_argument("--repos", type=Path, default=Path("repos.yaml"))
-    p.add_argument("--questions", type=int, default=10)
+    p.add_argument(
+        "--questions",
+        type=int,
+        default=DEFAULT_N_QUESTIONS,
+        help="how many questions to ask for. Written into the task string and "
+        "reported to the model on every tool reply.",
+    )
     p.add_argument(
         "--task",
         default=None,
-        help="the human turn, sent verbatim. Overrides --questions entirely.",
+        help="the human turn, sent verbatim. Replaces the standard wording only: "
+        "--questions still sets the target the agent reports on every tool reply, "
+        "and a task that does not name that number is refused.",
     )
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--max-tokens", type=int, default=None)
@@ -93,6 +107,9 @@ def main() -> int:
     if not args.repos.is_file():
         print(f"pin file not found: {args.repos}")
         return 2
+    if args.questions < 1:
+        print("--questions must be at least 1: a run with no target has no stopping condition")
+        return 2
     if args.score_held_out and not args.reason:
         print("--score-held-out requires --reason: an unexplained ledger line cannot be checked")
         return 2
@@ -123,6 +140,7 @@ def main() -> int:
             args.model,
             pinned_on=repo_set.pinned_on,
             task=task,
+            n_questions=args.questions,
             run_limits=limits,
             location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"),
             project=os.environ.get("GOOGLE_CLOUD_PROJECT"),

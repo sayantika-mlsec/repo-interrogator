@@ -16,11 +16,23 @@ WHAT THIS LAYER OWNS
 Sequencing, and nothing else. It clones through the workspace context manager,
 indexes through the symbol layer, constructs the agent through ``build_agent``,
 runs it, and writes the trajectory to disk. Limits, tool configuration, the task
-string and the model id all arrive from the caller. The pin file remains the
-only source of URLs and SHAs.
+string, the question target and the model id all arrive from the caller. The pin
+file remains the only source of URLs and SHAs.
 
 Two policies live here because there is nowhere lower to put them: the held-out
 guard, and the rule that every run leaves an artifact.
+
+THE QUESTION TARGET TRAVELS WITH THE TASK
+-----------------------------------------
+The target reaches the model twice: written into the task string, and reported
+by the agent on every tool reply. They have to agree, and the agent refuses a
+task that does not name its target rather than running with the model told two
+different numbers.
+
+So ``n_questions`` is passed to ``build_agent`` here, not left at a default. A
+caller that supplies its own ``task`` still supplies the matching target; the
+agent's guard is what catches the caller that forgets. The default is imported
+rather than written again, because two independently authored tens drift.
 
 THE HELD-OUT GUARD
 ------------------
@@ -49,14 +61,14 @@ successful reads would leave exactly the reads worth knowing about unrecorded.
 TEXT-ONLY REPOSITORIES DEGRADE, THEY DO NOT ABORT
 -------------------------------------------------
 A repository with too little Python for structural extraction is cloned in
-text-only mode and has no symbol index. The agent runs anyway, with four tools
-instead of five: ``get_symbols`` returns an observation saying no index exists,
+text-only mode and has no symbol index. The agent runs anyway, with five tools
+instead of six: ``get_symbols`` returns an observation saying no index exists,
 and the model is expected to reach for ``search_code`` instead. That path is
 already tested.
 
 Refusing would mean this layer enforcing a constraint the layer below handles
 deliberately. The degradation is logged at warning level and recorded on the
-result, so a run with four tools is never mistaken for a run with five.
+result, so a run with five tools is never mistaken for a run with six.
 
 EVERY RUN LEAVES AN ARTIFACT, INCLUDING THE ONES THAT FAIL
 ----------------------------------------------------------
@@ -79,6 +91,13 @@ the failure path, and a failed run is a ``FailedRun`` rather than a
 cannot be read as a finished one -- the outcome is in the payload and ``-failed``
 is in the filename.
 
+A failed run can now carry questions. Writing is no longer the same act as
+stopping, so a run that recorded seven questions and then hit a ceiling is a
+different failure from one that recorded none. ``FailedRun`` reports the count
+in its row and the questions in its trace, and it is still a ``FailedRun``:
+questions produced by a run that never finished are evidence about the run, not
+a result.
+
 THE TRAJECTORY IS WRITTEN TO DISK
 ---------------------------------
 Messages are serialised through their own ``model_dump``, not through ``str``.
@@ -100,7 +119,15 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
-from .agent import RunLimits, RunProgress, RunResult, build_agent, default_task
+from .agent import (
+    DEFAULT_N_QUESTIONS,
+    Question,
+    RunLimits,
+    RunProgress,
+    RunResult,
+    build_agent,
+    default_task,
+)
 from .cloner import CloneLimits, ClonedRepo, cloned_repo
 from .errors import (
     HeldOutReadError,
@@ -145,6 +172,16 @@ depend on it say so.
 COMPLETED = "completed"
 """The one outcome that means a ``RunResult`` exists."""
 
+TOOLS_WITH_INDEX = 6
+"""list_files, get_symbols, read_file, search_code, record_questions, finish."""
+
+TOOLS_WITHOUT_INDEX = TOOLS_WITH_INDEX - 1
+"""``get_symbols`` still exists as a tool; it returns an observation saying so.
+
+Counted as absent because what the number is for is telling two runs apart in a
+results table, and a tool that can only refuse is not one the model can use.
+"""
+
 _OUTCOMES: dict[type[BaseException], str] = {
     TokenBudgetExceededError: "token-budget",
     StepBudgetExceededError: "step-budget",
@@ -156,6 +193,11 @@ Anything else records its own class name. A run killed by a provider 400, a
 containment breach or a keyboard interrupt is still worth a trace, and naming it
 by type keeps the outcome column groupable without pretending to have foreseen
 every failure.
+
+``no-finish`` now covers two cases the agent distinguishes in its message: a run
+that never called the finishing tool, and one that called it holding nothing.
+Both are runs that produced no result and both are worth the same column; the
+message says which.
 """
 
 
@@ -208,6 +250,13 @@ class RunMeta:
     model_id: str
     location: str
     task: str
+    n_questions: int
+    """The target the model was given, in the task string and on every tool reply.
+
+    On the row because it is a configuration knob like any other. A run asked
+    for five questions and a run asked for twenty are not comparable, and the
+    question count alone does not say which was asked for.
+    """
 
     mode: str
     measurement: dict[str, Any]
@@ -216,7 +265,7 @@ class RunMeta:
     symbol_files: int | None
     symbol_failures: int
     tools_available: int
-    """Five normally, four where no symbol index exists."""
+    """Six normally, five where no symbol index exists."""
 
     limits: dict[str, int]
     started_at: str
@@ -231,6 +280,7 @@ class RunMeta:
             "model_id": self.model_id,
             "location": self.location,
             "mode": self.mode,
+            "n_questions_requested": self.n_questions,
             "tools_available": self.tools_available,
             "symbols_indexed": self.symbols_indexed,
             "symbol_failures": self.symbol_failures,
@@ -245,7 +295,8 @@ class RunRecord(RunMeta):
     """A completed run: everything it was, cost and produced.
 
     Constructed only where a ``RunResult`` exists. The type is the guarantee --
-    anything holding a ``RunRecord`` is holding a run that called ``finish``.
+    anything holding a ``RunRecord`` is holding a run that called ``finish``
+    while holding at least one recorded question.
     """
 
     duration_s: float
@@ -271,7 +322,7 @@ class RunRecord(RunMeta):
 
 @dataclass
 class FailedRun(RunMeta):
-    """A run that cost money and produced no questions.
+    """A run that cost money and returned no result.
 
     A separate type from ``RunRecord`` on purpose. The two carry the same
     metadata and the same cost columns, so a single type with a nullable
@@ -279,8 +330,12 @@ class FailedRun(RunMeta):
     responsible for remembering to check it. One that forgot would tabulate a
     truncated run beside finished ones and nothing would say so.
 
-    ``n_questions`` is zero by construction: the loop breaks as soon as the sink
-    fills, so a run that reached this type never called ``finish``.
+    ``questions`` is no longer empty by construction. Writing and stopping are
+    separate acts now, so a run can record seven questions and then hit a
+    ceiling. They are kept and written to the trace, because "read for thirty
+    calls and produced nothing" and "produced seven and ran out of room" are
+    different failures that a step count cannot tell apart. They are not a
+    result and this is not a ``RunRecord``.
     """
 
     duration_s: float
@@ -288,19 +343,23 @@ class FailedRun(RunMeta):
     error_type: str
     error_message: str
     progress: RunProgress = field(repr=False)
+    questions: tuple[Question, ...] = field(default=(), repr=False)
     trace_path: Path | None = None
 
     def to_row(self) -> dict[str, Any]:
         row = self.base_row()
         row["outcome"] = self.outcome
         row["duration_s"] = round(self.duration_s, 2)
-        row["n_questions"] = 0
         row.update(self.progress.to_dict())
+        # Deliberately not the same column a completed run fills. A failed run
+        # has no result, and a table that summed the two would be counting
+        # questions that were never returned.
+        row["n_questions"] = 0
         row["error_type"] = self.error_type
         return row
 
     def questions_as_dicts(self) -> list[dict[str, Any]]:
-        return []
+        return [q.model_dump() for q in self.questions]
 
     def trajectory_as_dicts(self) -> list[dict[str, Any]]:
         return _messages_as_dicts(self.progress.messages)
@@ -394,10 +453,12 @@ def _build_index(repo: ClonedRepo) -> SymbolIndex | None:
         return build_symbol_index(repo)
     except SymbolIndexUnavailableError:
         log.warning(
-            "%s: no symbol index (mode=%s). Running with four tools; get_symbols "
-            "will return an observation and the model must use search_code.",
+            "%s: no symbol index (mode=%s). Running with %d usable tools; "
+            "get_symbols will return an observation and the model must use "
+            "search_code.",
             repo.name,
             repo.mode.value,
+            TOOLS_WITHOUT_INDEX,
         )
         return None
 
@@ -410,6 +471,7 @@ def _build_meta(
     model_id: str,
     location: str,
     task: str,
+    n_questions: int,
     pinned_on: str | None,
     limits: RunLimits,
     started: datetime,
@@ -424,12 +486,13 @@ def _build_meta(
         model_id=model_id,
         location=location,
         task=task,
+        n_questions=n_questions,
         mode=repo.mode.value,
         measurement=repo.measurement.to_dict(),
         symbols_indexed=len(index.symbols) if index else None,
         symbol_files=index.files_indexed if index else None,
         symbol_failures=len(index.failures) if index else 0,
-        tools_available=5 if index else 4,
+        tools_available=TOOLS_WITH_INDEX if index else TOOLS_WITHOUT_INDEX,
         limits=limits.to_dict(),
         started_at=_stamp(started),
     )
@@ -441,7 +504,7 @@ def run_repo(
     *,
     pinned_on: str | None = None,
     task: str | None = None,
-    n_questions: int = 10,
+    n_questions: int = DEFAULT_N_QUESTIONS,
     run_limits: RunLimits | None = None,
     clone_limits: CloneLimits | None = None,
     tool_config: ToolConfig | None = None,
@@ -457,6 +520,11 @@ def run_repo(
 
     The clone is scoped to the context manager, so the working tree is removed
     on the exception path as well as the success path.
+
+    ``n_questions`` reaches both the task string and the agent. A caller
+    supplying its own ``task`` must state the same number in it; the agent
+    refuses the mismatch rather than running with the model told two different
+    targets.
 
     An agent failure is recorded and then re-raised. Nothing here converts a
     breached run into a returned value: the caller either receives a
@@ -495,6 +563,7 @@ def run_repo(
             model_id=model_id,
             location=location,
             task=task,
+            n_questions=n_questions,
             pinned_on=pinned_on,
             limits=run_limits,
             started=started,
@@ -506,6 +575,7 @@ def run_repo(
             symbol_index=index,
             tool_config=tool_config,
             limits=run_limits,
+            n_questions=n_questions,
             location=location,
             project=project,
         )
@@ -524,6 +594,9 @@ def run_repo(
             # 400, a containment breach and a keyboard interrupt all leave a
             # trajectory worth reading, and narrowing this to the project's own
             # error types would keep exactly the surprising failures unrecorded.
+            #
+            # The recorded questions come off the agent for the same reason the
+            # counters do: they say how far the run got, and nothing else will.
             failed = FailedRun(
                 **vars(meta),
                 duration_s=time.perf_counter() - clock,
@@ -531,6 +604,7 @@ def run_repo(
                 error_type=type(exc).__name__,
                 error_message=str(exc),
                 progress=agent.progress,
+                questions=agent.recorded,
             )
             raise
         finally:
@@ -544,9 +618,11 @@ def run_repo(
                         # the exception, and the trace path is the one thing the
                         # exception does not carry.
                         log.error(
-                            "%s failed (%s). Trajectory kept: %s",
+                            "%s failed (%s) after recording %d questions. "
+                            "Trajectory kept: %s",
                             target.repo,
                             target.outcome,
+                            len(target.questions),
                             path,
                         )
                 except OSError as write_exc:
@@ -566,6 +642,10 @@ def write_trace(record: RunRecord | FailedRun, trace_dir: Path) -> Path:
     A run that did not complete is marked in the filename as well as in the
     payload. The payload is authoritative; the filename is so that a directory
     listing does not read as ten finished runs when three of them died.
+
+    A failed run's ``questions`` are the ones it recorded before it stopped, not
+    ones it returned. The ``outcome`` field is what tells the two apart, and it
+    is read before the questions are.
     """
     trace_dir.mkdir(parents=True, exist_ok=True)
     safe_time = record.started_at.replace(":", "").replace("-", "")
@@ -610,7 +690,7 @@ def format_summary(record: RunRecord) -> str:
     """One block naming the run and what it cost."""
     r = record.result
     tools = f"{record.tools_available} tools"
-    if record.tools_available == 4:
+    if record.tools_available == TOOLS_WITHOUT_INDEX:
         tools += " (no symbol index)"
     symbols = (
         f"{record.symbols_indexed} symbols / {record.symbol_files} files"
@@ -627,5 +707,5 @@ def format_summary(record: RunRecord) -> str:
         f"  run        {tools}, {r.steps} steps, {r.tool_calls} tool calls "
         f"({r.tool_errors} errors)\n"
         f"  cost       {r.total_tokens} tokens, {record.duration_s:.1f}s\n"
-        f"  produced   {len(r.questions)} questions"
+        f"  produced   {len(r.questions)} of {record.n_questions} questions"
     )
