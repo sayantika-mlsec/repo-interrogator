@@ -324,9 +324,12 @@ def default_task(n_questions: int = 10) -> str:
     """
     return (
         f"Produce {n_questions} questions about this repository. "
-        "Investigate first; call finish when you are done."
+        f"Keep a running list as you investigate. "
+        f"You are done when that list holds {n_questions} questions, each with "
+        f"at least one citation to a range you have read. "
+        f"At that point stop opening files and call finish with all "
+        f"{n_questions} questions in one call."
     )
-
 
 def _render_tool_error(exc: ToolError) -> str:
     """Turn a tool failure into an observation the model can act on.
