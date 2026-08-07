@@ -989,3 +989,144 @@ Second, if that fails, remove the choice — a point at which finishing is the
 only action available. This terminates by construction, but questions produced
 because no alternative remained are a different artifact from questions produced
 when the model judged itself ready. That cost is why it is second.
+
+## Entry 14 — Writing was never an available action
+
+### What prompted this
+
+The previous entry established that no wording of the stopping rule made the
+agent finish. Three statements of it, at every level available, produced three
+unrelated trajectories through the same repository and one behaviour: read until
+the ceiling, produce nothing.
+
+Reading the trajectories back, the reason was structural rather than verbal.
+Questions could only be written in one place — as the argument to the finishing
+tool. That made writing a terminal act. Reading was available on every turn;
+writing was available only on the last one, and nothing ever made it the better
+move. The instruction was not unclear. The action it asked for did not exist as
+a normal option.
+
+### What was changed
+
+**Recording became its own tool.** `record_questions` takes a batch and can be
+called as often as the model likes. The finishing tool now takes no arguments
+and only ends the run.
+
+This gave up a property the previous design had for free: output and termination
+could not come apart, because stopping *was* producing. It is now enforced
+instead. A run that never calls the finishing tool is a failure, and so is a run
+that calls it holding nothing. Neither returns a result. The guarantee is
+unchanged from outside; it is a check rather than a consequence, which is worth
+stating because a check can be deleted and a consequence cannot.
+
+Termination is detected by the finishing tool's observation arriving in the
+stream. The collector cannot serve that role any more — it fills during the run,
+which is the entire point.
+
+Every tool reply reports the running count against the target. The target
+therefore reaches the model twice, in the task string and in every reply, so the
+agent refuses a task string that does not name the number it was constructed
+with. The check is a substring test and cannot be more than that without parsing
+an authored string, which the layer refuses to do on purpose. It catches the
+failure worth catching: a caller that changes one and forgets the other.
+
+### First result
+
+One question recorded, at the twenty-second of thirty calls. Then eight further
+calls of reading with no second batch.
+
+That is not an agent that cannot write. It wrote, saw the count move, and went
+back to reading. Two readings were available: it batches too coarsely, or it
+reads too deeply before writing anything. The trajectory supported the second —
+it moved through five separate areas of the repository at four to six calls
+each, and recorded once, after the fifth. The instruction said to record as it
+went. The behaviour was to finish understanding first.
+
+At twenty-one calls for the first question, ten questions would cost roughly two
+hundred. The ceiling was never the binding constraint. The ratio of reading to
+writing was.
+
+### Second change, and the result
+
+One sentence added to the task: a single file that has been read is enough to
+ground a question, and questions should be recorded after each file rather than
+after a whole area is understood.
+
+Five questions recorded in thirty calls, against one before. Roughly six calls
+per question.
+
+### What this establishes
+
+The stopping condition is solved as a mechanism. What remains is arithmetic: at
+six calls per question, ten questions needs about sixty calls, and the ceiling is
+thirty.
+
+**Raising the ceiling is now an evidence-based decision.** The earlier refusal to
+raise it was correct — a run wandering at step thirty would still be wandering at
+step fifty. A run converging at a measured rate and cut off by the ceiling is a
+different situation, and it is the one that was demanded before the number moved.
+
+**The token ceiling has to be recomputed first.** Cumulative spend is quadratic
+in step count. Thirty calls cost 594k against a ceiling of 800k. Sixty calls will
+breach the token budget long before reaching the step budget, so raising one
+without the other only moves the wall.
+
+### The questions themselves
+
+The one-file instruction carried a real risk of producing shallow questions,
+grounded in a single file rather than in a pattern across several. It did not
+land. The five name specific symbols, ask about behaviour that requires having
+read the code, and several ask about edge cases the implementation may or may not
+handle — which is a question that can only be posed after reading.
+
+Three properties are worth recording, all of which touch questions already open.
+
+**Cited ranges are wide.** One spans 187 lines, another 126. These resolve
+correctly: the file exists and the range is inside it. But a citation that wide
+is a weak claim about grounding, and it will be recorded as read in full, which
+is true. A resolution rate of 100% is compatible with citations this coarse.
+That is a limitation of the measure, not a defect in the run, and it belongs in
+any discussion of what the resolution rate means.
+
+**Two of the five are compound**, joining several questions with "and". One names
+two functions under a single citation that covers both — honest, but a new form
+of a known problem.
+
+**One asks for design intent** rather than observable behaviour, which is
+adjacent to the question about grounding in author commentary rather than in
+inferred behaviour.
+
+None of these blocks the next step. They are specimens for taxonomy work that was
+already scheduled, and they are the first real ones.
+
+### Cost, noted
+
+Spend per run has risen across every arm in this sequence: 539k, 632k, 580k,
+706k, 594k. Part is a longer system prompt and an extra tool; part is that runs
+now do more.
+
+Two observations dominate the input growth on the most recent runs. The initial
+directory listing is 24,000 characters and is resent on every subsequent call. A
+single symbol listing for one large file was 16,000 characters and was resent
+twelve times. An earlier record identified the directory listing as the largest
+single lever on cost if one were ever needed. Raising the step ceiling is the
+point at which it becomes needed.
+
+### Consequences elsewhere
+
+The tool count on every results row was wrong the moment recording became its own
+tool: six with a symbol index, five without. It is now two named constants rather
+than two bare integers.
+
+A failed run can now carry questions. A run that recorded seven and then hit a
+ceiling is a different failure from one that recorded none, and until this change
+that distinction could not exist. They are written to the trace and reported in
+the failure message. They are not a result, and the run is still recorded as a
+failure.
+
+The target question count is now on every row. A run asked for five and a run
+asked for twenty are not comparable, and the produced count alone does not say
+which was asked for.
+
+The fake agent in the agent smoke suite gained another attribute it has to know
+about, which is the coupling an earlier record describes. It still fails loudly.
