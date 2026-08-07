@@ -311,8 +311,9 @@ definitions, then read the ranges that look load-bearing. Prefer questions whose
 answer is visible in code you have actually read over questions any repository \
 of this kind would produce.
 
-Every citation must point at a range you read. When you are done, call finish."""
-
+Every citation must point at a range you read. Collect questions as you go \
+rather than at the end. Once you hold the number of questions you were asked \
+for, stop reading and call finish with all of them."""
 
 def default_task(n_questions: int = 10) -> str:
     """The standard task string. Callers may substitute their own.
@@ -421,7 +422,8 @@ def build_tools(file_tools: FileTools, sink: list[Question]) -> list[Any]:
     def finish(questions: list[Question]) -> str:
         """Return the finished questions and end the run.
 
-        Call this exactly once, when you have gathered enough evidence.
+        Call this exactly once, as soon as you hold the number of questions you
+        were asked for. Do not keep reading past that point.
 
         Args:
             questions: The questions, each with at least one citation pointing
